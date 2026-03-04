@@ -150,9 +150,8 @@ install_docker() {
     # Fedora 43+ uses dnf5 where older config-manager flags can break.
     # Install Docker via repofile to avoid dnf4/dnf5 CLI differences.
     if [ -f /etc/os-release ]; then
-        # shellcheck source=/dev/null
-        . /etc/os-release
-        if [ "$ID" = "fedora" ]; then
+        DISTRO_ID=$(sed -n 's/^ID=//p' /etc/os-release | head -n 1 | tr -d '"')
+        if [ "$DISTRO_ID" = "fedora" ]; then
             dnf remove -y docker docker-client docker-client-latest docker-common \
                 docker-latest docker-latest-logrotate docker-logrotate docker-selinux \
                 docker-engine-selinux docker-engine 2>/dev/null || true
