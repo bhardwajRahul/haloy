@@ -1,21 +1,26 @@
 package api
 
 import (
+	"context"
 	"log/slog"
 	"net/http"
 	"time"
 
+	"github.com/haloydev/haloy/internal/apitypes"
 	"github.com/haloydev/haloy/internal/logging"
 	"golang.org/x/time/rate"
 )
 
 type APIServer struct {
-	router           *http.ServeMux
-	logBroker        logging.StreamPublisher
-	logLevel         slog.Level
-	apiToken         string
-	rateLimiter      *RateLimiter
-	layerRateLimiter *RateLimiter
+	router                 *http.ServeMux
+	logBroker              logging.StreamPublisher
+	logLevel               slog.Level
+	apiToken               string
+	rateLimiter            *RateLimiter
+	layerRateLimiter       *RateLimiter
+	uploadDiskSpaceCheck   func(context.Context, int64) error
+	assembleDiskSpaceCheck func(context.Context, apitypes.ImageAssembleRequest) error
+	imageDiskSpaceCheck    func(context.Context, apitypes.ImageDiskSpaceCheckRequest) (diskSpaceCheckResult, error)
 }
 
 func NewServer(apiToken string, logBroker logging.StreamPublisher, logLevel slog.Level) *APIServer {

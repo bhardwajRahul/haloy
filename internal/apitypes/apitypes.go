@@ -99,3 +99,16 @@ type ImageAssembleResponse struct {
 	Success bool   `json:"success"`
 	Message string `json:"message"`
 }
+
+type ImageDiskSpaceCheckRequest struct {
+	UploadSizeBytes         uint64 `json:"uploadSizeBytes,omitempty"`
+	LayerUploadBytes        uint64 `json:"layerUploadBytes,omitempty"`
+	AssembledImageSizeBytes uint64 `json:"assembledImageSizeBytes,omitempty"`
+}
+
+type ImageDiskSpaceCheckResponse struct {
+	OK             bool   `json:"ok"`
+	Path           string `json:"path"`
+	RequiredBytes  uint64 `json:"requiredBytes"`
+	AvailableBytes uint64 `json:"availableBytes"`
+}

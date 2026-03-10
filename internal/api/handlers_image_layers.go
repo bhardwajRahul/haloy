@@ -122,6 +122,11 @@ func (s *APIServer) handleImageAssemble() http.HandlerFunc {
 			return
 		}
 
+		if err := s.ensureAssembleDiskSpace(r.Context(), req); err != nil {
+			writeImageHandlerError(w, "Failed disk space preflight", err)
+			return
+		}
+
 		db, err := storage.New()
 		if err != nil {
 			http.Error(w, "Failed to connect to database", http.StatusInternalServerError)
@@ -155,7 +160,7 @@ func (s *APIServer) handleImageAssemble() http.HandlerFunc {
 		defer cli.Close()
 
 		if err := docker.LoadImageFromTar(ctx, cli, tarPath); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to load image: %v", err), http.StatusInternalServerError)
+			writeImageHandlerError(w, "Failed to load image", err)
 			return
 		}
 

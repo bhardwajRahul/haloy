@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
@@ -16,6 +15,7 @@ import (
 	"github.com/haloydev/haloy/internal/apitypes"
 	"github.com/haloydev/haloy/internal/cmdexec"
 	"github.com/haloydev/haloy/internal/config"
+	"github.com/haloydev/haloy/internal/constants"
 	"github.com/haloydev/haloy/internal/helpers"
 	"github.com/haloydev/haloy/internal/ui"
 	"golang.org/x/sync/errgroup"
@@ -142,6 +142,11 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 		return fmt.Errorf("failed to save image to tar: %w", err)
 	}
 
+	tempInfo, err := tempFile.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat image tar: %w", err)
+	}
+
 	for _, resolvedDeployConfig := range resolvedTargetConfigs {
 		token, err := getToken(resolvedDeployConfig, resolvedDeployConfig.Server)
 		if err != nil {
@@ -153,17 +158,30 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 			return fmt.Errorf("failed to create API client: %w", err)
 		}
 
-		// Check if server supports layer-based upload
-		if supportsLayerUpload(ctx, api) {
+		capabilities := getServerCapabilities(ctx, api)
+		supportsLayerUpload := hasCapability(capabilities, constants.CapabilityLayerUpload)
+		supportsImagePreflight := hasCapability(capabilities, constants.CapabilityImagePreflight)
+
+		if supportsLayerUpload {
 			ui.Info("Pushing image %s to %s", imageRef, resolvedDeployConfig.Server)
-			if err := uploadImageLayered(ctx, api, imageRef, tempFile.Name()); err != nil {
+			if err := uploadImageLayered(ctx, api, imageRef, tempFile.Name(), supportsImagePreflight); err != nil {
 				ui.Warn("Layer-based push failed, falling back to full push: %v", err)
+				if supportsImagePreflight {
+					if err := reportFullUploadDiskSpace(ctx, api, uint64(tempInfo.Size())); err != nil {
+						return err
+					}
+				}
 				if err := api.PostFile(ctx, "images/upload", "image", tempFile.Name()); err != nil {
 					return fmt.Errorf("failed to upload image: %w", err)
 				}
 			}
 		} else {
 			ui.Info("Pushing image %s to %s", imageRef, resolvedDeployConfig.Server)
+			if supportsImagePreflight {
+				if err := reportFullUploadDiskSpace(ctx, api, uint64(tempInfo.Size())); err != nil {
+					return err
+				}
+			}
 			if err := api.PostFile(ctx, "images/upload", "image", tempFile.Name()); err != nil {
 				return fmt.Errorf("failed to upload image: %w", err)
 			}
@@ -173,17 +191,27 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 	return nil
 }
 
-// supportsLayerUpload checks if the server supports layer-based upload
-func supportsLayerUpload(ctx context.Context, api *apiclient.APIClient) bool {
+// getServerCapabilities returns the server capability set. It falls back to no capabilities on error.
+func getServerCapabilities(ctx context.Context, api *apiclient.APIClient) map[string]struct{} {
 	var version apitypes.VersionResponse
 	if err := api.Get(ctx, "version", &version); err != nil {
-		return false
+		return nil
 	}
-	return slices.Contains(version.Capabilities, "layer-upload")
+
+	capabilities := make(map[string]struct{}, len(version.Capabilities))
+	for _, capability := range version.Capabilities {
+		capabilities[capability] = struct{}{}
+	}
+	return capabilities
+}
+
+func hasCapability(capabilities map[string]struct{}, capability string) bool {
+	_, ok := capabilities[capability]
+	return ok
 }
 
 // uploadImageLayered uploads an image using layer-based transfer
-func uploadImageLayered(ctx context.Context, api *apiclient.APIClient, imageRef, tarPath string) error {
+func uploadImageLayered(ctx context.Context, api *apiclient.APIClient, imageRef, tarPath string, supportsImagePreflight bool) error {
 	// Parse the image tar to extract manifest, config, and layers
 	manifest, configData, layers, err := parseImageTar(tarPath)
 	if err != nil {
@@ -207,6 +235,29 @@ func uploadImageLayered(ctx context.Context, api *apiclient.APIClient, imageRef,
 	cachedCount := len(checkResp.Exists)
 	totalCount := len(digests)
 	missingCount := len(checkResp.Missing)
+	var missingLayerBytes uint64
+	for _, digest := range checkResp.Missing {
+		if info, ok := layers[digest]; ok && info.size > 0 {
+			missingLayerBytes += uint64(info.size)
+		}
+	}
+
+	if supportsImagePreflight {
+		assembleReq := apitypes.ImageAssembleRequest{
+			ImageRef: imageRef,
+			Config:   configData,
+			Manifest: manifest,
+		}
+
+		assembledImageSizeBytes, err := estimateClientAssembledImageSize(assembleReq, layers)
+		if err != nil {
+			return fmt.Errorf("failed to estimate assembled image size: %w", err)
+		}
+
+		if err := reportLayeredUploadDiskSpace(ctx, api, missingLayerBytes, assembledImageSizeBytes); err != nil {
+			return err
+		}
+	}
 
 	if missingCount == 0 {
 		ui.Info("Server has %d/%d layers cached", cachedCount, totalCount)
@@ -273,6 +324,70 @@ func uploadImageLayered(ctx context.Context, api *apiclient.APIClient, imageRef,
 	}
 
 	return nil
+}
+
+const clientAssembledLayerMetadataOverheadBytes uint64 = 4096
+
+func reportFullUploadDiskSpace(ctx context.Context, api *apiclient.APIClient, uploadSizeBytes uint64) error {
+	return reportImageDiskSpace(ctx, api, apitypes.ImageDiskSpaceCheckRequest{
+		UploadSizeBytes: uploadSizeBytes,
+	})
+}
+
+func reportLayeredUploadDiskSpace(ctx context.Context, api *apiclient.APIClient, layerUploadBytes, assembledImageSizeBytes uint64) error {
+	return reportImageDiskSpace(ctx, api, apitypes.ImageDiskSpaceCheckRequest{
+		LayerUploadBytes:        layerUploadBytes,
+		AssembledImageSizeBytes: assembledImageSizeBytes,
+	})
+}
+
+func reportImageDiskSpace(ctx context.Context, api *apiclient.APIClient, req apitypes.ImageDiskSpaceCheckRequest) error {
+	var resp apitypes.ImageDiskSpaceCheckResponse
+	if err := api.Post(ctx, "images/disk-space-check", req, &resp); err != nil {
+		return fmt.Errorf("failed to check server disk space: %w", err)
+	}
+
+	ui.Info(
+		"Server disk space: need %s, have %s free",
+		helpers.FormatBinaryBytes(resp.RequiredBytes),
+		helpers.FormatBinaryBytes(resp.AvailableBytes),
+	)
+
+	if !resp.OK {
+		return fmt.Errorf(
+			"server disk space too low on %s: need %s free, have %s free",
+			resp.Path,
+			helpers.FormatBinaryBytes(resp.RequiredBytes),
+			helpers.FormatBinaryBytes(resp.AvailableBytes),
+		)
+	}
+
+	return nil
+}
+
+func estimateClientAssembledImageSize(req apitypes.ImageAssembleRequest, layers map[string]layerInfo) (uint64, error) {
+	manifestJSON, err := json.Marshal([]apitypes.ImageManifestEntry{req.Manifest})
+	if err != nil {
+		return 0, fmt.Errorf("marshal manifest: %w", err)
+	}
+
+	total := uint64(len(req.Config)) + uint64(len(manifestJSON))
+
+	for _, layerPath := range req.Manifest.Layers {
+		digest := extractDigestFromPath(layerPath)
+		info, ok := layers[digest]
+		if !ok {
+			return 0, fmt.Errorf("layer %s not found in tar metadata", digest)
+		}
+		if info.size < 0 {
+			return 0, fmt.Errorf("layer %s has negative size", digest)
+		}
+
+		total += uint64(info.size)
+		total += clientAssembledLayerMetadataOverheadBytes
+	}
+
+	return total, nil
 }
 
 const (

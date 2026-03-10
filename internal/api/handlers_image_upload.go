@@ -15,6 +15,11 @@ import (
 // handleImageUpload handles uploading Docker image tar files
 func (s *APIServer) handleImageUpload() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if err := s.ensureUploadDiskSpace(r.Context(), r.ContentLength); err != nil {
+			writeImageHandlerError(w, "Failed disk space preflight", err)
+			return
+		}
+
 		// Parse multipart form (32MB max memory)
 		if err := r.ParseMultipartForm(32 << 20); err != nil {
 			http.Error(w, "Failed to parse multipart form", http.StatusBadRequest)
@@ -31,6 +36,11 @@ func (s *APIServer) handleImageUpload() http.HandlerFunc {
 		// Validate file extension
 		if !strings.HasSuffix(header.Filename, ".tar") {
 			http.Error(w, "File must be a .tar archive", http.StatusBadRequest)
+			return
+		}
+
+		if err := s.ensureUploadDiskSpace(r.Context(), header.Size); err != nil {
+			writeImageHandlerError(w, "Failed disk space preflight", err)
 			return
 		}
 
@@ -63,7 +73,7 @@ func (s *APIServer) handleImageUpload() http.HandlerFunc {
 		defer cli.Close()
 
 		if err := docker.LoadImageFromTar(ctx, cli, tempFile.Name()); err != nil {
-			http.Error(w, fmt.Sprintf("Failed to load image: %v", err), http.StatusInternalServerError)
+			writeImageHandlerError(w, "Failed to load image", err)
 			return
 		}
 

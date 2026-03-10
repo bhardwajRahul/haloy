@@ -11,7 +11,7 @@ func (s *APIServer) handleVersion() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		response := apitypes.VersionResponse{
 			Version:      constants.Version,
-			Capabilities: []string{"layer-upload"},
+			Capabilities: []string{constants.CapabilityLayerUpload, constants.CapabilityImagePreflight},
 		}
 
 		encodeJSON(w, http.StatusOK, response)

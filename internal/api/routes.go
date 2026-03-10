@@ -10,6 +10,7 @@ func (s *APIServer) setupRoutes() {
 	s.router.Handle("GET /health", httpWithRateLimit(s.handleHealth()))
 	s.router.Handle("POST /v1/deploy", httpWithAuth(s.handleDeploy()))
 	s.router.Handle("GET /v1/deploy/{deploymentID}/logs", streamWithAuth(s.handleDeploymentLogs()))
+	s.router.Handle("POST /v1/images/disk-space-check", httpWithAuth(s.handleImageDiskSpaceCheck()))
 	s.router.Handle("POST /v1/images/upload", httpWithAuth(s.handleImageUpload()))
 	s.router.Handle("POST /v1/images/layers/check", httpWithAuthLayers(s.handleLayerCheck()))
 	s.router.Handle("POST /v1/images/layers", httpWithAuthLayers(s.handleLayerUpload()))
