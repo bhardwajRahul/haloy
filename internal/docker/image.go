@@ -107,8 +107,52 @@ func PruneImages(ctx context.Context, cli *client.Client, logger *slog.Logger) (
 	return report.SpaceReclaimed, nil
 }
 
-// RemoveImages removes extra (duplicate) image tags for a given app, keeping only the newest N tags based on the deploymentID.
+// RemoveImages removes extra image tags for a given app, keeping the requested number of deployments in total.
+// When ignoreDeploymentID is set, that deployment is counted as one of the kept deployments and excluded from removal candidates.
 // Running containers reference the image by digest; if an image is in use we allow removal of duplicate tags as long as at least one tag is preserved.
+type removableImageTag struct {
+	Tag          string
+	DeploymentID string
+	ImageID      string
+}
+
+func selectImageTagsToRemove(candidates []removableImageTag, inUseImageIDs map[string]struct{}, deploymentsToKeep int, ignoreDeploymentID string) []removableImageTag {
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].DeploymentID > candidates[j].DeploymentID
+	})
+
+	keepFromCandidates := deploymentsToKeep
+	if ignoreDeploymentID != "" && keepFromCandidates > 0 {
+		keepFromCandidates--
+	}
+
+	keepTags := make(map[string]struct{})
+	keepImageIDs := make(map[string]struct{})
+	for i, cand := range candidates {
+		if i < keepFromCandidates {
+			keepTags[cand.Tag] = struct{}{}
+			keepImageIDs[cand.ImageID] = struct{}{}
+		}
+	}
+
+	var removals []removableImageTag
+	for _, cand := range candidates {
+		if _, ok := keepTags[cand.Tag]; ok {
+			continue
+		}
+
+		_, inUse := inUseImageIDs[cand.ImageID]
+		_, idInKeep := keepImageIDs[cand.ImageID]
+		if inUse && !idInKeep {
+			continue
+		}
+
+		removals = append(removals, cand)
+	}
+
+	return removals
+}
+
 func RemoveImages(ctx context.Context, cli *client.Client, logger *slog.Logger, appName, ignoreDeploymentID string, deploymentsToKeep int) error {
 	// List all images for the app that match the format appName:<deploymentID>.
 	images, err := cli.ImageList(ctx, image.ListOptions{
@@ -133,12 +177,7 @@ func RemoveImages(ctx context.Context, cli *client.Client, logger *slog.Logger, 
 
 	// Build a candidate list of removable image tags.
 	// Only consider tags that are not ":latest" and that start with the appName prefix.
-	type removeImage struct {
-		Tag          string
-		DeploymentID string
-		ImageID      string
-	}
-	var candidates []removeImage
+	var candidates []removableImageTag
 	for _, img := range images {
 		for _, tag := range img.RepoTags {
 			// Skip the "latest" and ignoreDeploymentID tag and any tag not matching the expected format.
@@ -152,7 +191,7 @@ func RemoveImages(ctx context.Context, cli *client.Client, logger *slog.Logger, 
 				continue
 			}
 			deploymentID := parts[1]
-			candidates = append(candidates, removeImage{
+			candidates = append(candidates, removableImageTag{
 				Tag:          tag,
 				DeploymentID: deploymentID,
 				ImageID:      img.ID,
@@ -160,37 +199,7 @@ func RemoveImages(ctx context.Context, cli *client.Client, logger *slog.Logger, 
 		}
 	}
 
-	// Sort the candidate tags descending by deploymentID (newest first).
-	sort.Slice(candidates, func(i, j int) bool {
-		return candidates[i].DeploymentID > candidates[j].DeploymentID
-	})
-
-	// Build sets of safe-to-keep tags and the corresponding imageIDs.
-	keepTags := make(map[string]struct{})
-	keepImageIDs := make(map[string]struct{})
-	for i, cand := range candidates {
-		if i < deploymentsToKeep {
-			keepTags[cand.Tag] = struct{}{}
-			keepImageIDs[cand.ImageID] = struct{}{}
-		}
-	}
-
-	// Remove duplicate tags that are not marked to keep.
-	// For images in use we only remove extra tags when at least one tag is kept.
-	for _, cand := range candidates {
-		// Skip candidate if its tag is in the keep set.
-		if _, ok := keepTags[cand.Tag]; ok {
-			continue
-		}
-		// Check: if the image is in use and its digest is not in the keep list,
-		// then don't remove this tag to ensure at least one tag remains for running containers.
-		_, inUse := inUseImageIDs[cand.ImageID]
-		_, idInKeep := keepImageIDs[cand.ImageID]
-		if inUse && !idInKeep {
-			continue
-		}
-
-		// Remove the candidate tag.
+	for _, cand := range selectImageTagsToRemove(candidates, inUseImageIDs, deploymentsToKeep, ignoreDeploymentID) {
 		if _, err := cli.ImageRemove(ctx, cand.Tag, image.RemoveOptions{Force: true, PruneChildren: false}); err != nil {
 			logger.Error("Failed to remove image tag", "tag", cand.Tag, "error", err)
 		} else {
