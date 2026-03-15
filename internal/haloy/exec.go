@@ -74,6 +74,10 @@ Examples:
 				return err
 			}
 
+			if err := checkServersAuth(ctx, targets); err != nil {
+				return err
+			}
+
 			// Build exec request
 			execReq := apitypes.ExecRequest{
 				Command:       execCommand,

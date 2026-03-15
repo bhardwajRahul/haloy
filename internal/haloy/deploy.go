@@ -82,6 +82,10 @@ func DeployAppCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
 				}
 			}
 
+			if err := checkServersAuth(ctx, resolvedTargets); err != nil {
+				return err
+			}
+
 			builds, pushes, uploads, localBuilds := ResolveImageBuilds(resolvedTargets)
 
 			// Check Docker availability before building

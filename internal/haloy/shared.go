@@ -1,6 +1,7 @@
 package haloy
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/haloydev/haloy/internal/apiclient"
+	"github.com/haloydev/haloy/internal/apitypes"
 	"github.com/haloydev/haloy/internal/config"
 	"github.com/haloydev/haloy/internal/constants"
 	"github.com/haloydev/haloy/internal/helpers"
@@ -18,6 +21,43 @@ func createDeploymentID() string {
 	entropy := ulid.Monotonic(rand.New(rand.NewSource(time.Now().UnixNano())), 0)
 	id := ulid.MustNew(ulid.Timestamp(time.Now()), entropy).String()
 	return strings.ToLower(id)
+}
+
+func checkServerAuth(ctx context.Context, server string, targetConfig *config.TargetConfig) error {
+	token, err := getToken(targetConfig, server)
+	if err != nil {
+		return fmt.Errorf("server %s: %w", server, err)
+	}
+
+	api, err := apiclient.New(server, token)
+	if err != nil {
+		return fmt.Errorf("server %s: unable to create API client: %w", server, err)
+	}
+
+	var version apitypes.VersionResponse
+	if err := api.Get(ctx, "version", &version); err != nil {
+		return fmt.Errorf("server %s: authentication check failed: %w", server, err)
+	}
+
+	return nil
+}
+
+func checkServersAuth(ctx context.Context, targets map[string]config.TargetConfig) error {
+	checked := make(map[string]bool)
+	for _, target := range targets {
+		normalized, err := helpers.NormalizeServerURL(target.Server)
+		if err != nil {
+			return fmt.Errorf("invalid server URL %q: %w", target.Server, err)
+		}
+		if checked[normalized] {
+			continue
+		}
+		checked[normalized] = true
+		if err := checkServerAuth(ctx, target.Server, &target); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func getToken(targetConfig *config.TargetConfig, url string) (string, error) {

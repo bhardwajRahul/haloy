@@ -48,6 +48,10 @@ Use 'haloy rollback-targets' to list available deployment IDs.`,
 				return err
 			}
 
+			if err := checkServersAuth(ctx, targets); err != nil {
+				return err
+			}
+
 			newDeploymentID := createDeploymentID()
 
 			servers := configloader.TargetsByServer(targets)
