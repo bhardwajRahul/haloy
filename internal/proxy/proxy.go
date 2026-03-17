@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -145,6 +147,7 @@ func (p *Proxy) Start(httpAddr, httpsAddr string) error {
 		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
+		ErrorLog:          log.New(io.Discard, "", 0),
 	}
 
 	errCh := make(chan error, 2)
@@ -282,7 +285,6 @@ func (p *Proxy) httpsHandler() http.Handler {
 		// Find matching route
 		route := p.findRoute(config, host)
 		if route == nil {
-			p.logRequest(r, http.StatusNotFound, time.Since(startTime))
 			p.serveErrorPage(w, http.StatusNotFound, "Not Found")
 			return
 		}
