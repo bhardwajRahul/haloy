@@ -115,6 +115,10 @@ func handleImageHistory(
 			logger.Debug(fmt.Sprintf("Old images cleaned up, keeping %d recent images locally", *rawDeployConfig.Image.History.Count))
 		}
 
+		if _, err := docker.PruneImages(ctx, cli, logger); err != nil {
+			logger.Warn("Failed to prune dangling images", "error", err)
+		}
+
 	case config.HistoryStrategyRegistry:
 		if err := writeDeployConfigHistory(rawDeployConfig, deploymentID, newImageRef); err != nil {
 			logger.Warn("Failed to write deploy config history", "error", err)
@@ -126,6 +130,10 @@ func handleImageHistory(
 			logger.Warn("Failed to clean up old images", "error", err)
 		} else {
 			logger.Debug("Old images cleaned up, registry strategy - keeping only current image locally")
+		}
+
+		if _, err := docker.PruneImages(ctx, cli, logger); err != nil {
+			logger.Warn("Failed to prune dangling images", "error", err)
 		}
 
 	default:
