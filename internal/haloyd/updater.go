@@ -313,6 +313,26 @@ func (u *Updater) buildProxyConfig(deployments map[string]Deployment) (*proxy.Co
 		}
 	}
 
+	for appName, d := range u.deploymentManager.FailedDeployments() {
+		if _, exists := haloydDeployments[appName]; exists {
+			continue
+		}
+
+		var domains []proxy.HaloydDomain
+		for _, domain := range d.Labels.Domains {
+			domains = append(domains, proxy.HaloydDomain{
+				Canonical: domain.Canonical,
+				Aliases:   domain.Aliases,
+			})
+		}
+
+		haloydDeployments[appName] = proxy.HaloydDeployment{
+			AppName:   appName,
+			Domains:   domains,
+			Instances: nil,
+		}
+	}
+
 	return proxy.BuildConfigFromHaloydDeployments(haloydDeployments, u.apiDomain)
 }
 

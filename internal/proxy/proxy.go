@@ -311,7 +311,7 @@ func (p *Proxy) httpsHandler() http.Handler {
 		// Select a backend (simple round-robin would go here, for now just use first)
 		if len(route.Backends) == 0 {
 			p.logRequest(r, http.StatusBadGateway, time.Since(startTime))
-			p.serveErrorPage(w, http.StatusBadGateway, "No backends available")
+			p.serveErrorPage(w, http.StatusBadGateway, "No healthy backends available for this application")
 			return
 		}
 

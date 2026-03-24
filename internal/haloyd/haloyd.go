@@ -281,6 +281,17 @@ func Run(debug bool) {
 					}
 					logging.LogDeploymentComplete(deploymentLogger, canonicalDomains, de.DeploymentID, de.AppName,
 						fmt.Sprintf("Deployed %s", de.AppName))
+				} else {
+					appFailures := result.GetAppFailures(de.AppName)
+					deployments := updater.deploymentManager.Deployments()
+					_, hasHealthy := deployments[de.AppName]
+
+					if len(appFailures) > 0 && !hasHealthy {
+						logCtx, logCancel := context.WithTimeout(ctx, 30*time.Second)
+						defer logCancel()
+						logContainerFailureLogs(logCtx, cli, deploymentLogger, appFailures)
+						deploymentLogger.Error(fmt.Sprintf("Container died after deployment for %s, app has no healthy instances", de.AppName))
+					}
 				}
 			}()
 

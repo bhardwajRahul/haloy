@@ -57,17 +57,21 @@ type FailedContainer struct {
 type DeploymentManager struct {
 	cli *client.Client
 	// deployments is a map of appName to Deployment, key is the app name.
-	deployments      map[string]Deployment
-	compareResult    compareResult
-	deploymentsMutex sync.RWMutex
-	haloydConfig     *config.HaloydConfig
+	deployments map[string]Deployment
+	// failedDeployments tracks apps that were previously deployed but lost all healthy containers.
+	// This allows the proxy to keep routes for these apps (returning 502 instead of 404).
+	failedDeployments map[string]Deployment
+	compareResult     compareResult
+	deploymentsMutex  sync.RWMutex
+	haloydConfig      *config.HaloydConfig
 }
 
 func NewDeploymentManager(cli *client.Client, haloydConfig *config.HaloydConfig) *DeploymentManager {
 	return &DeploymentManager{
-		cli:          cli,
-		deployments:  make(map[string]Deployment),
-		haloydConfig: haloydConfig,
+		cli:               cli,
+		deployments:       make(map[string]Deployment),
+		failedDeployments: make(map[string]Deployment),
+		haloydConfig:      haloydConfig,
 	}
 }
 
@@ -228,6 +232,16 @@ func (dm *DeploymentManager) UpdateDeployments(healthy []HealthyContainer) (hasC
 		len(compareResult.RemovedDeployments) > 0 ||
 		len(compareResult.UpdatedDeployments) > 0
 
+	for appName, deployment := range compareResult.RemovedDeployments {
+		dm.failedDeployments[appName] = deployment
+	}
+	for appName := range compareResult.AddedDeployments {
+		delete(dm.failedDeployments, appName)
+	}
+	for appName := range compareResult.UpdatedDeployments {
+		delete(dm.failedDeployments, appName)
+	}
+
 	dm.compareResult = compareResult
 	return hasChanged
 }
@@ -240,6 +254,15 @@ func (dm *DeploymentManager) Deployments() map[string]Deployment {
 	deploymentsCopy := make(map[string]Deployment, len(dm.deployments))
 	maps.Copy(deploymentsCopy, dm.deployments)
 	return deploymentsCopy
+}
+
+func (dm *DeploymentManager) FailedDeployments() map[string]Deployment {
+	dm.deploymentsMutex.RLock()
+	defer dm.deploymentsMutex.RUnlock()
+
+	copy := make(map[string]Deployment, len(dm.failedDeployments))
+	maps.Copy(copy, dm.failedDeployments)
+	return copy
 }
 
 // GetHealthCheckTargets returns all instances as health check targets.

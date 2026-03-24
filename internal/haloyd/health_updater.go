@@ -79,6 +79,26 @@ func (u *HealthConfigUpdater) OnHealthChange(healthyTargets []healthcheck.Target
 		}
 	}
 
+	for appName, d := range u.deploymentManager.FailedDeployments() {
+		if _, exists := haloydDeployments[appName]; exists {
+			continue
+		}
+
+		var domains []proxy.HaloydDomain
+		for _, domain := range d.Labels.Domains {
+			domains = append(domains, proxy.HaloydDomain{
+				Canonical: domain.Canonical,
+				Aliases:   domain.Aliases,
+			})
+		}
+
+		haloydDeployments[appName] = proxy.HaloydDeployment{
+			AppName:   appName,
+			Domains:   domains,
+			Instances: nil,
+		}
+	}
+
 	proxyConfig, err := proxy.BuildConfigFromHaloydDeployments(haloydDeployments, u.apiDomain)
 	if err != nil {
 		u.logger.Error("Failed to build proxy config from health check", "error", err)
