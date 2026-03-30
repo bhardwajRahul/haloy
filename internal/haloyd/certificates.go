@@ -536,7 +536,7 @@ func (cm *CertificatesManager) checkRenewals(logger *slog.Logger, domains []Cert
 				logging.AttrDomains, allDomains,
 				"domain", canonical,
 				"aliases", domain.Aliases)
-			obtainedDomain, err := cm.obtainCertificate(domain)
+			obtainedDomain, err := cm.obtainCertificate(logger, domain)
 			if err != nil {
 				return renewedDomains, err
 			}
@@ -637,7 +637,7 @@ func (cm *CertificatesManager) cleanupDomainCertificates(canonical string) error
 	return nil
 }
 
-func (cm *CertificatesManager) validateDomain(domain string) error {
+func (cm *CertificatesManager) validateDomain(logger *slog.Logger, domain string) error {
 	// Check if domain resolves
 	ips, err := net.LookupIP(domain)
 	if err != nil {
@@ -668,11 +668,10 @@ Please add DNS records:
 	}
 
 	if !domainIP.Equal(serverIP) {
-		return fmt.Errorf(`domain %s points to %s but this server's IP is %s
-
-Please update your DNS:
-- A record: %s → %s
-- Test with: dig A %s`, domain, domainIP, serverIP, domain, serverIP, domain)
+		logger.Warn("Domain resolves to a different IP than this server, which is expected if using a CDN or proxy (e.g. Cloudflare). If not, update your DNS A record.",
+			"domain", domain,
+			"domain_ip", domainIP.String(),
+			"server_ip", serverIP.String())
 	}
 
 	return nil
@@ -717,13 +716,13 @@ Original error: %w`, domain, err)
 	return fmt.Errorf("authorization failed for %s: %w", domain, err)
 }
 
-func (m *CertificatesManager) obtainCertificate(managedDomain CertificatesDomain) (obtainedDomain CertificatesDomain, err error) {
+func (m *CertificatesManager) obtainCertificate(logger *slog.Logger, managedDomain CertificatesDomain) (obtainedDomain CertificatesDomain, err error) {
 	canonicalDomain := managedDomain.Canonical
 	aliases := managedDomain.Aliases
 	allDomains := append([]string{canonicalDomain}, aliases...)
 
 	for _, domain := range allDomains {
-		if err := m.validateDomain(domain); err != nil {
+		if err := m.validateDomain(logger, domain); err != nil {
 			return obtainedDomain, fmt.Errorf("domain validation failed for %s: %w", domain, err)
 		}
 	}
