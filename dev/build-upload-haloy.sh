@@ -2,25 +2,80 @@
 
 set -e
 
-# Ensure an argument is provided
-if [ -z "$1" ]; then
-    echo "Usage: $0 <hostname>"
+CLI_BINARY_NAME=haloy
+HOSTNAME=""
+VERSION_OVERRIDE=""
+VERSION_SUFFIX="-dev"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --version)
+            if [ -z "${2:-}" ]; then
+                echo "Missing value for --version"
+                exit 1
+            fi
+            VERSION_OVERRIDE=$2
+            shift 2
+            ;;
+        --version=*)
+            VERSION_OVERRIDE=${1#*=}
+            shift
+            ;;
+        --version-suffix)
+            if [ -z "${2:-}" ]; then
+                echo "Missing value for --version-suffix"
+                exit 1
+            fi
+            VERSION_SUFFIX=$2
+            shift 2
+            ;;
+        --version-suffix=*)
+            VERSION_SUFFIX=${1#*=}
+            shift
+            ;;
+        --no-dev-suffix)
+            VERSION_SUFFIX=""
+            shift
+            ;;
+        -*)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+        *)
+            HOSTNAME=$1
+            shift
+            ;;
+    esac
+done
+
+if [ -z "$HOSTNAME" ]; then
+    echo "Usage: $0 [--version <value>] [--version-suffix <suffix>] [--no-dev-suffix] <host|user@host>"
+    echo ""
+    echo "This script builds and deploys the haloy CLI."
+    echo ""
+    echo "Options:"
+    echo "  --version <value>         Override the embedded haloy version completely"
+    echo "  --version-suffix <value>  Append a custom suffix to the detected version"
+    echo "  --no-dev-suffix           Use the detected version without the default -dev suffix"
     exit 1
 fi
 
-CLI_BINARY_NAME=haloy
-
-HOSTNAME=$1
-
-# Use the current username from the shell
-USERNAME=$(whoami)
+# Use the current username from the shell unless a remote user is specified.
+DEFAULT_USERNAME=$(whoami)
+TARGET_HOST=${HOSTNAME##*@}
+if [[ "$HOSTNAME" == *"@"* ]]; then
+    SSH_TARGET=$HOSTNAME
+else
+    SSH_TARGET="${DEFAULT_USERNAME}@${HOSTNAME}"
+fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-version=$("$SCRIPT_DIR/get-version.sh")
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+version=$(HALOY_VERSION="$VERSION_OVERRIDE" HALOY_VERSION_SUFFIX="$VERSION_SUFFIX" "$SCRIPT_DIR/get-version.sh")
 echo "Building version: $version"
 
 # Detect target platform
-if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ]; then
+if [ "$TARGET_HOST" = "localhost" ] || [ "$TARGET_HOST" = "127.0.0.1" ]; then
     # Local deployment - detect current platform
     OS=$(uname -s)
     ARCH=$(uname -m)
@@ -64,34 +119,29 @@ fi
 
 # Build the CLI binary using detected/default platform
 # Using same flags as production: -s -w strips debug symbols, -trimpath for reproducible builds
-CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags="-s -w -X 'github.com/haloydev/haloy/internal/constants.Version=$version'" -o $CLI_BINARY_NAME ../cmd/haloy
+BUILD_DIR=$(mktemp -d)
+CLI_BUILD_PATH="$BUILD_DIR/$CLI_BINARY_NAME"
+
+(
+    cd "$REPO_ROOT"
+    CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build -trimpath -ldflags="-s -w -X 'github.com/haloydev/haloy/internal/constants.Version=$version'" -o "$CLI_BUILD_PATH" ./cmd/haloy
+)
 
 # Support localhost: If HOSTNAME is localhost (or 127.0.0.1), use local commands instead of SSH/SCP.
-if [ "$HOSTNAME" = "localhost" ] || [ "$HOSTNAME" = "127.0.0.1" ]; then
+if [ "$TARGET_HOST" = "localhost" ] || [ "$TARGET_HOST" = "127.0.0.1" ]; then
     echo "Using local deployment for ${HOSTNAME}"
 
-    # Handle different home directory structures
-    if [ "$OS" = "Darwin" ]; then
-        # macOS
-        LOCAL_BIN_DIR="/Users/${USERNAME}/.local/bin"
-    else
-        # Linux
-        LOCAL_BIN_DIR="/home/${USERNAME}/.local/bin"
-    fi
-
+    LOCAL_BIN_DIR="$HOME/.local/bin"
     mkdir -p "$LOCAL_BIN_DIR"
-    cp $CLI_BINARY_NAME "$LOCAL_BIN_DIR/$CLI_BINARY_NAME"
+    cp "$CLI_BUILD_PATH" "$LOCAL_BIN_DIR/$CLI_BINARY_NAME"
 
     # Make binary executable
     chmod +x "$LOCAL_BIN_DIR/$CLI_BINARY_NAME"
 else
-    ssh "${USERNAME}@${HOSTNAME}" "mkdir -p /home/${USERNAME}/.local/bin"
-    scp $CLI_BINARY_NAME ${USERNAME}@"$HOSTNAME":/home/${USERNAME}/.local/bin/$CLI_BINARY_NAME
+    ssh "$SSH_TARGET" "mkdir -p \$HOME/.local/bin"
+    scp "$CLI_BUILD_PATH" "$SSH_TARGET":~/.local/bin/$CLI_BINARY_NAME
 fi
 
-# Remove binary after copying
-if [ -f "$CLI_BINARY_NAME" ]; then
-    rm "$CLI_BINARY_NAME"
-fi
+rm -rf "$BUILD_DIR"
 
 echo "Successfully built and deployed haloy CLI for $GOOS/$GOARCH."
