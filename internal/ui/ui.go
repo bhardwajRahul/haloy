@@ -14,7 +14,6 @@ import (
 var (
 	Amber     = lipgloss.Color("#F59E0B")
 	Blue      = lipgloss.Color("#3B82F6")
-	White     = lipgloss.Color("#fafafa")
 	Gray      = lipgloss.Color("#6B7280")
 	Green     = lipgloss.Color("#10B981")
 	LightGray = lipgloss.Color("241")
@@ -25,39 +24,38 @@ var (
 // Styles
 var (
 	s          = lipgloss.NewStyle()
-	titleStyle = s.Bold(true).Foreground(White)
+	titleStyle = s.Bold(true)
 )
 
 func Basic(format string, a ...any) {
-	printStyledLines(os.Stdout, "", s.Foreground(White), format, a...)
+	printStyledLines(os.Stdout, "", s, format, a...)
 }
 
 func Info(format string, a ...any) {
-	printStyledLines(os.Stdout, s.Foreground(Blue).Render("●"), s.Foreground(White), format, a...)
+	printStyledLines(os.Stdout, s.Foreground(Blue).Render("●"), s, format, a...)
 }
 
 func Success(format string, a ...any) {
-	printStyledLines(os.Stdout, s.Foreground(Green).Render("●"), s.Foreground(White).Bold(true), format, a...)
+	printStyledLines(os.Stdout, s.Foreground(Green).Render("●"), s.Bold(true), format, a...)
 }
 
 func Debug(format string, a ...any) {
-	printStyledLines(os.Stdout, s.Foreground(Purple).Render("◆"), s.Foreground(White), format, a...)
+	printStyledLines(os.Stdout, s.Foreground(Purple).Render("◆"), s, format, a...)
 }
 
 func Warn(format string, a ...any) {
-	printStyledLines(os.Stderr, s.Foreground(Amber).Render("⚠"), s.Foreground(White), format, a...)
+	printStyledLines(os.Stderr, s.Foreground(Amber).Render("⚠"), s, format, a...)
 }
 
 func Error(format string, a ...any) {
-	printStyledLines(os.Stderr, s.Foreground(Red).Render("✖"), s.Foreground(White), format, a...)
+	printStyledLines(os.Stderr, s.Foreground(Red).Render("✖"), s, format, a...)
 }
 
 var lineStyle = lipgloss.NewStyle().
-	Foreground(White).
 	TabWidth(5)
 
 func Section(title string, textLines []string) {
-	fmt.Println(titleStyle.BorderStyle(lipgloss.NormalBorder()).BorderForeground(White).BorderBottom(true).Render(title))
+	fmt.Println(titleStyle.BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).Render(title))
 	for _, line := range textLines {
 		fmt.Println(lineStyle.Render(line))
 	}
@@ -100,7 +98,7 @@ func stylePrefix(prefix string) string {
 		return ""
 	}
 
-	return lipgloss.NewStyle().Bold(true).Foreground(White).Render(prefix)
+	return lipgloss.NewStyle().Bold(true).Render(prefix)
 }
 
 type PrefixedUI struct {
