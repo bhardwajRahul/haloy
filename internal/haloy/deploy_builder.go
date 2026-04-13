@@ -21,6 +21,8 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+var runCLICommandInDir = cmdexec.RunCLICommandInDir
+
 func ResolveImageBuilds(targets map[string]config.TargetConfig) (
 	builds map[string]*config.Image,
 	pushes map[string][]*config.Image,
@@ -137,8 +139,7 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 	defer os.Remove(tempFile.Name())
 	defer tempFile.Close()
 
-	saveCmd := fmt.Sprintf("docker save -o %s %s", tempFile.Name(), imageRef)
-	if err := cmdexec.RunCommand(ctx, saveCmd, "."); err != nil {
+	if err := saveImageTar(ctx, imageRef, tempFile.Name()); err != nil {
 		return fmt.Errorf("failed to save image to tar: %w", err)
 	}
 
@@ -189,6 +190,10 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 	}
 
 	return nil
+}
+
+func saveImageTar(ctx context.Context, imageRef, tarPath string) error {
+	return runCLICommandInDir(ctx, ".", "docker", "save", "-o", tarPath, imageRef)
 }
 
 // getServerCapabilities returns the server capability set. It falls back to no capabilities on error.
