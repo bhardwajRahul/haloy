@@ -14,8 +14,8 @@ func RunCommand(ctx context.Context, command, workDir string) error {
 		return fmt.Errorf("empty command")
 	}
 
-	shell := findShell()
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	shell, flag := findShell()
+	cmd := exec.CommandContext(ctx, shell, flag, command)
 	cmd.Dir = workDir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -30,8 +30,8 @@ func RunCommandWithOutput(ctx context.Context, command, workDir string) (string,
 		return "", fmt.Errorf("empty command")
 	}
 
-	shell := findShell()
-	cmd := exec.CommandContext(ctx, shell, "-c", command)
+	shell, flag := findShell()
+	cmd := exec.CommandContext(ctx, shell, flag, command)
 	cmd.Dir = workDir
 	cmd.Env = os.Environ()
 
@@ -85,17 +85,26 @@ func RunCLICommand(ctx context.Context, name string, args ...string) (string, er
 	return strings.TrimSpace(string(output)), nil
 }
 
-func findShell() string {
-	// Use user's preferred shell if set
+func findShell() (string, string) {
 	if shell := os.Getenv("SHELL"); shell != "" {
-		return shell
+		return shell, "-c"
 	}
 
-	// Use exec.LookPath to find bash (same as `env bash`)
 	if bashPath, err := exec.LookPath("bash"); err == nil {
-		return bashPath
+		return bashPath, "-c"
 	}
 
-	// Fall back to sh
-	return "sh"
+	if comspec := os.Getenv("COMSPEC"); comspec != "" {
+		return comspec, "/C"
+	}
+
+	if pwsh, err := exec.LookPath("powershell"); err == nil {
+		return pwsh, "-Command"
+	}
+
+	if cmd, err := exec.LookPath("cmd"); err == nil {
+		return cmd, "/C"
+	}
+
+	return "sh", "-c"
 }

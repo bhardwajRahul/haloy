@@ -114,6 +114,44 @@ func TestUploadImage_TempFilePattern(t *testing.T) {
 	}
 }
 
+func TestExtractDigestFromPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		layerPath string
+		want      string
+	}{
+		{
+			name:      "OCI format: blobs/sha256/<hash>",
+			layerPath: "blobs/sha256/abc123def456",
+			want:      "sha256:abc123def456",
+		},
+		{
+			name:      "older buildkit format: blobs/sha256/<hash>/layer.tar",
+			layerPath: "blobs/sha256/abc123def456/layer.tar",
+			want:      "sha256:abc123def456",
+		},
+		{
+			name:      "legacy format: sha256:<hash>/layer.tar",
+			layerPath: "sha256:abc123def456/layer.tar",
+			want:      "sha256:abc123def456",
+		},
+		{
+			name:      "simple format: <hash>/layer.tar",
+			layerPath: "abc123def456/layer.tar",
+			want:      "sha256:abc123def456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := extractDigestFromPath(tt.layerPath)
+			if got != tt.want {
+				t.Fatalf("extractDigestFromPath(%q) = %q, want %q", tt.layerPath, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestFormatDiskSpaceEstimateMessage_FullUpload(t *testing.T) {
 	msg := formatDiskSpaceEstimateMessage(
 		apitypes.ImageDiskSpaceCheckRequest{

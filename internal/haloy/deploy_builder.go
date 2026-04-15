@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -107,8 +108,7 @@ func BuildImage(ctx context.Context, imageRef string, image *config.Image, confi
 	// Add build context as the last argument
 	args = append(args, buildContext)
 
-	cmd := fmt.Sprintf("docker %s", strings.Join(args, " "))
-	if err := cmdexec.RunCommand(ctx, cmd, workDir); err != nil {
+	if err := runCLICommandInDir(ctx, workDir, "docker", args...); err != nil {
 		return fmt.Errorf("failed to build image %s: %w", imageRef, err)
 	}
 
@@ -136,14 +136,15 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 	if err != nil {
 		return fmt.Errorf("failed to create temporary file: %w", err)
 	}
-	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
+	tempPath := tempFile.Name()
+	tempFile.Close()
+	defer os.Remove(tempPath)
 
-	if err := saveImageTar(ctx, imageRef, tempFile.Name()); err != nil {
+	if err := saveImageTar(ctx, imageRef, tempPath); err != nil {
 		return fmt.Errorf("failed to save image to tar: %w", err)
 	}
 
-	tempInfo, err := os.Stat(tempFile.Name())
+	tempInfo, err := os.Stat(tempPath)
 	if err != nil {
 		return fmt.Errorf("failed to stat image tar: %w", err)
 	}
@@ -165,14 +166,14 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 
 		if supportsLayerUpload {
 			ui.Info("Pushing image %s to %s", imageRef, resolvedDeployConfig.Server)
-			if err := uploadImageLayered(ctx, api, imageRef, tempFile.Name(), supportsImagePreflight); err != nil {
+			if err := uploadImageLayered(ctx, api, imageRef, tempPath, supportsImagePreflight); err != nil {
 				ui.Warn("Layer-based push failed, falling back to full push: %v", err)
 				if supportsImagePreflight {
 					if err := reportFullUploadDiskSpace(ctx, api, uint64(tempInfo.Size())); err != nil {
 						return withImagePruneHint(err, *resolvedDeployConfig)
 					}
 				}
-				if err := api.PostFile(ctx, "images/upload", "image", tempFile.Name()); err != nil {
+				if err := api.PostFile(ctx, "images/upload", "image", tempPath); err != nil {
 					return withImagePruneHint(fmt.Errorf("failed to upload image: %w", err), *resolvedDeployConfig)
 				}
 			}
@@ -183,7 +184,7 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 					return withImagePruneHint(err, *resolvedDeployConfig)
 				}
 			}
-			if err := api.PostFile(ctx, "images/upload", "image", tempFile.Name()); err != nil {
+			if err := api.PostFile(ctx, "images/upload", "image", tempPath); err != nil {
 				return withImagePruneHint(fmt.Errorf("failed to upload image: %w", err), *resolvedDeployConfig)
 			}
 		}
@@ -586,12 +587,11 @@ func parseImageTar(tarPath string) (apitypes.ImageManifestEntry, []byte, map[str
 
 // extractDigestFromPath extracts the sha256 digest from a layer path
 func extractDigestFromPath(layerPath string) string {
-	dir := filepath.Dir(layerPath)
+	dir := path.Dir(layerPath)
 
 	// Handle modern Docker buildkit OCI format: blobs/sha256/<hash>
-	// where the file itself is named with the hash (no layer.tar subdirectory)
 	if dir == "blobs/sha256" {
-		hash := filepath.Base(layerPath)
+		hash := path.Base(layerPath)
 		return "sha256:" + hash
 	}
 
