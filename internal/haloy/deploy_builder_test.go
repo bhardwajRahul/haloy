@@ -1,6 +1,7 @@
 package haloy
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/haloydev/haloy/internal/apitypes"
+	"github.com/haloydev/haloy/internal/config"
 )
 
 func TestGetBuilderWorkDir(t *testing.T) {
@@ -149,6 +151,89 @@ func TestExtractDigestFromPath(t *testing.T) {
 				t.Fatalf("extractDigestFromPath(%q) = %q, want %q", tt.layerPath, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildImage_BuildArgsArePassedWithoutLiteralQuotes(t *testing.T) {
+	origRunner := runCLICommandInDir
+	t.Cleanup(func() { runCLICommandInDir = origRunner })
+
+	var capturedName string
+	var capturedArgs []string
+	runCLICommandInDir = func(ctx context.Context, workDir, name string, args ...string) error {
+		capturedName = name
+		capturedArgs = args
+		return nil
+	}
+
+	image := &config.Image{
+		Repository: "myapp",
+		Tag:        "latest",
+		BuildConfig: &config.BuildConfig{
+			Args: []config.BuildArg{
+				{Name: "VITE_POCKETBASE_URL", ValueSource: config.ValueSource{Value: "https://pb.example.com"}},
+				{Name: "LABEL", ValueSource: config.ValueSource{Value: "my value"}},
+				{Name: "ENV_ONLY"},
+			},
+		},
+	}
+
+	if err := BuildImage(context.Background(), image.ImageRef(), image, ""); err != nil {
+		t.Fatalf("BuildImage returned error: %v", err)
+	}
+
+	if capturedName != "docker" {
+		t.Errorf("expected docker command, got %q", capturedName)
+	}
+
+	want := map[string]string{
+		"VITE_POCKETBASE_URL": "VITE_POCKETBASE_URL=https://pb.example.com",
+		"LABEL":               "LABEL=my value",
+	}
+	seen := map[string]bool{}
+	envOnlySeen := false
+
+	for i := 0; i < len(capturedArgs); i++ {
+		if capturedArgs[i] != "--build-arg" {
+			continue
+		}
+		if i+1 >= len(capturedArgs) {
+			t.Fatalf("--build-arg at end of args with no value: %v", capturedArgs)
+		}
+		got := capturedArgs[i+1]
+
+		if strings.Contains(got, `"`) {
+			t.Errorf("build-arg contains literal double quote: %q", got)
+		}
+
+		if got == "ENV_ONLY" {
+			envOnlySeen = true
+			continue
+		}
+
+		name, _, ok := strings.Cut(got, "=")
+		if !ok {
+			t.Errorf("build-arg missing '=': %q", got)
+			continue
+		}
+		expected, known := want[name]
+		if !known {
+			t.Errorf("unexpected build-arg %q", got)
+			continue
+		}
+		if got != expected {
+			t.Errorf("build-arg %s = %q, want %q", name, got, expected)
+		}
+		seen[name] = true
+	}
+
+	for name := range want {
+		if !seen[name] {
+			t.Errorf("missing build-arg for %s in %v", name, capturedArgs)
+		}
+	}
+	if !envOnlySeen {
+		t.Errorf("missing name-only build-arg ENV_ONLY in %v", capturedArgs)
 	}
 }
 
