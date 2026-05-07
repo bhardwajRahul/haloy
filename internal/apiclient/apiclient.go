@@ -279,6 +279,14 @@ func (c *APIClient) Stream(ctx context.Context, path string, handler func(data s
 		if resp.StatusCode == http.StatusUnauthorized {
 			return fmt.Errorf("authentication failed for stream - check your %s", constants.EnvVarAPIToken)
 		}
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("stream returned status %d (unable to read error details: %v)", resp.StatusCode, readErr)
+		}
+		errorMessage := strings.TrimSpace(string(bodyBytes))
+		if errorMessage != "" {
+			return fmt.Errorf("stream returned status %d: %s", resp.StatusCode, errorMessage)
+		}
 		return fmt.Errorf("stream returned status %d", resp.StatusCode)
 	}
 

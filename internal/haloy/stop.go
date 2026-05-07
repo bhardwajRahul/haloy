@@ -59,16 +59,7 @@ func StopAppCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
 				return err
 			}
 
-			infoMessage := "Stop operation started."
-			if flags.all {
-				infoMessage = infoMessage + " Use 'haloy logs --all' to monitor pogress"
-			}
-
-			if len(flags.targets) > 0 {
-				infoMessage = infoMessage + fmt.Sprintf(" Use 'haloy logs -t %s'", strings.Join(flags.targets, ","))
-			}
-
-			ui.Info("%s", infoMessage)
+			ui.Info("%s", stopInfoMessage(flags.targets, flags.all))
 
 			return nil
 		},
@@ -84,6 +75,20 @@ func StopAppCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
 	cmd.RegisterFlagCompletionFunc("targets", completeTargetNames)
 
 	return cmd
+}
+
+func stopInfoMessage(targets []string, allTargets bool) string {
+	return fmt.Sprintf("Stop operation started. Use '%s' to check whether containers are still running.", stopStatusCommand(targets, allTargets))
+}
+
+func stopStatusCommand(targets []string, allTargets bool) string {
+	if allTargets {
+		return "haloy status --all"
+	}
+	if len(targets) > 0 {
+		return fmt.Sprintf("haloy status -t %s", strings.Join(targets, ","))
+	}
+	return "haloy status"
 }
 
 func stopApp(ctx context.Context, targetConfig *config.TargetConfig, targetServer, appName string, removeContainers, removeVolumes bool, prefix string) error {
