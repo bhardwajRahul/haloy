@@ -4,16 +4,33 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 	"strings"
 
 	"github.com/haloydev/haloy/internal/apiclient"
 	"github.com/haloydev/haloy/internal/apitypes"
 	"github.com/haloydev/haloy/internal/config"
+	"github.com/haloydev/haloy/internal/configloader"
+	"github.com/haloydev/haloy/internal/helpers"
 	"github.com/haloydev/haloy/internal/ui"
+	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
 
-func ServerRegistryCmd() *cobra.Command {
+var isTerminal = isatty.IsTerminal
+
+type registryTarget struct {
+	Server       string
+	TargetConfig *config.TargetConfig
+}
+
+type registryListResult struct {
+	Server   string
+	Response *apitypes.RegistriesResponse
+}
+
+func ServerRegistryCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "registry",
 		Short: "Manage server registry credentials",
@@ -21,22 +38,22 @@ func ServerRegistryCmd() *cobra.Command {
 	}
 
 	cmd.AddCommand(
-		ServerRegistryLoginCmd(),
-		ServerRegistryLogoutCmd(),
-		ServerRegistryListCmd(),
+		ServerRegistryLoginCmd(configPath, flags),
+		ServerRegistryLogoutCmd(configPath, flags),
+		ServerRegistryListCmd(configPath, flags),
 	)
 
 	return cmd
 }
 
-func ServerRegistryLoginCmd() *cobra.Command {
-	var username, password string
+func ServerRegistryLoginCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
+	var serverFlag, username, password string
 	var passwordStdin bool
 
 	cmd := &cobra.Command{
-		Use:   "login <server-url> <registry>",
+		Use:   "login <registry>",
 		Short: "Store registry credentials on a Haloy server",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if username == "" {
 				return fmt.Errorf("--username is required")
@@ -45,7 +62,11 @@ func ServerRegistryLoginCmd() *cobra.Command {
 				return fmt.Errorf("use either --password or --password-stdin, not both")
 			}
 			if passwordStdin {
-				data, err := io.ReadAll(cmd.InOrStdin())
+				stdin := cmd.InOrStdin()
+				if file, ok := stdin.(*os.File); ok && isTerminal(file.Fd()) {
+					return fmt.Errorf("--password-stdin requires piped input. Try: echo \"$REGISTRY_TOKEN\" | haloy server registry login docker.io --username <user> --password-stdin. For a direct server, add --server <url>")
+				}
+				data, err := io.ReadAll(stdin)
 				if err != nil {
 					return fmt.Errorf("failed to read password from stdin: %w", err)
 				}
@@ -55,77 +76,249 @@ func ServerRegistryLoginCmd() *cobra.Command {
 				return fmt.Errorf("--password or --password-stdin is required")
 			}
 
-			serverURL := args[0]
-			registry := config.NormalizeRegistryServer(args[1])
-			response, err := registryLogin(cmd.Context(), serverURL, apitypes.RegistryLoginRequest{
-				Server:   registry,
-				Username: username,
-				Password: password,
-			})
+			registry, serverOverride, err := parseRegistryCommandArgs(args, serverFlag, "login")
 			if err != nil {
 				return err
 			}
 
-			ui.Success("Registry credentials stored on %s for %s", serverURL, response.Server)
+			targets, err := resolveRegistryTargets(cmd.Context(), registryConfigPath(configPath), flags, serverOverride)
+			if err != nil {
+				return err
+			}
+
+			for _, target := range targets {
+				response, err := registryLogin(cmd.Context(), target.TargetConfig, target.Server, apitypes.RegistryLoginRequest{
+					Server:   registry,
+					Username: username,
+					Password: password,
+				})
+				if err != nil {
+					return err
+				}
+				ui.Success("Registry credentials stored on %s for %s", target.Server, response.Server)
+			}
 			ui.Info("haloyd will use these credentials on future deploys")
 			return nil
 		},
 	}
 
+	addRegistryTargetFlags(cmd, flags, &serverFlag)
 	cmd.Flags().StringVarP(&username, "username", "u", "", "Registry username")
 	cmd.Flags().StringVarP(&password, "password", "p", "", "Registry password or access token")
-	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read registry password or access token from stdin")
+	cmd.Flags().BoolVar(&passwordStdin, "password-stdin", false, "Read registry password or access token from piped stdin")
 
 	return cmd
 }
 
-func ServerRegistryLogoutCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "logout <server-url> <registry>",
+func ServerRegistryLogoutCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
+	var serverFlag string
+
+	cmd := &cobra.Command{
+		Use:   "logout <registry>",
 		Short: "Remove registry credentials from a Haloy server",
-		Args:  cobra.ExactArgs(2),
+		Args:  cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			serverURL := args[0]
-			registry := config.NormalizeRegistryServer(args[1])
-			if err := registryLogout(cmd.Context(), serverURL, registry); err != nil {
-				return err
-			}
-
-			ui.Success("Registry credentials removed from %s for %s", serverURL, registry)
-			return nil
-		},
-	}
-}
-
-func ServerRegistryListCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "list <server-url>",
-		Short: "List registry credentials configured on a Haloy server",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			serverURL := args[0]
-			response, err := registryList(cmd.Context(), serverURL)
+			registry, serverOverride, err := parseRegistryCommandArgs(args, serverFlag, "logout")
 			if err != nil {
 				return err
 			}
 
-			if len(response.Registries) == 0 {
-				ui.Info("No registry credentials configured on %s", serverURL)
-				return nil
+			targets, err := resolveRegistryTargets(cmd.Context(), registryConfigPath(configPath), flags, serverOverride)
+			if err != nil {
+				return err
 			}
 
-			rows := make([][]string, 0, len(response.Registries))
-			for _, registry := range response.Registries {
-				rows = append(rows, []string{registry.Server, registry.Username})
+			for _, target := range targets {
+				if err := registryLogout(cmd.Context(), target.TargetConfig, target.Server, registry); err != nil {
+					return err
+				}
+				ui.Success("Registry credentials removed from %s for %s", target.Server, registry)
 			}
-			ui.Table([]string{"Registry", "Username"}, rows)
 			return nil
 		},
 	}
+
+	addRegistryTargetFlags(cmd, flags, &serverFlag)
+
+	return cmd
 }
 
-func registryAPI(ctx context.Context, serverURL string) (*apiclient.APIClient, error) {
-	token, err := getToken(nil, serverURL)
+func ServerRegistryListCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
+	var serverFlag string
+
+	cmd := &cobra.Command{
+		Use:   "list",
+		Short: "List registry credentials configured on a Haloy server",
+		Args:  cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			serverOverride, err := parseRegistryListArgs(args, serverFlag)
+			if err != nil {
+				return err
+			}
+
+			targets, err := resolveRegistryTargets(cmd.Context(), registryConfigPath(configPath), flags, serverOverride)
+			if err != nil {
+				return err
+			}
+
+			results := make([]registryListResult, 0, len(targets))
+			for _, target := range targets {
+				response, err := registryList(cmd.Context(), target.TargetConfig, target.Server)
+				if err != nil {
+					return err
+				}
+				results = append(results, registryListResult{
+					Server:   target.Server,
+					Response: response,
+				})
+			}
+			displayRegistryListResults(results)
+			return nil
+		},
+	}
+
+	addRegistryTargetFlags(cmd, flags, &serverFlag)
+
+	return cmd
+}
+
+func addRegistryTargetFlags(cmd *cobra.Command, flags *appCmdFlags, serverFlag *string) {
+	cmd.Flags().StringVarP(serverFlag, "server", "s", "", "Server URL (overrides config file)")
+	if flags != nil {
+		cmd.Flags().StringVarP(&flags.configPath, "config", "c", "", "Path to config file or directory (default: .)")
+		cmd.Flags().StringSliceVarP(&flags.targets, "targets", "t", nil, "Apply to specific targets (comma-separated)")
+		cmd.Flags().BoolVarP(&flags.all, "all", "a", false, "Apply to all targets")
+		cmd.RegisterFlagCompletionFunc("targets", completeTargetNames)
+	}
+}
+
+func parseRegistryCommandArgs(args []string, serverFlag, command string) (registry string, serverOverride string, err error) {
+	switch len(args) {
+	case 1:
+		return config.NormalizeRegistryServer(args[0]), serverFlag, nil
+	case 2:
+		if serverFlag != "" {
+			return "", "", fmt.Errorf("use either --server or the legacy '%s <server-url> <registry>' form, not both", command)
+		}
+		return config.NormalizeRegistryServer(args[1]), args[0], nil
+	default:
+		return "", "", fmt.Errorf("requires a registry")
+	}
+}
+
+func parseRegistryListArgs(args []string, serverFlag string) (serverOverride string, err error) {
+	switch len(args) {
+	case 0:
+		return serverFlag, nil
+	case 1:
+		if serverFlag != "" {
+			return "", fmt.Errorf("use either --server or the legacy 'list <server-url>' form, not both")
+		}
+		return args[0], nil
+	default:
+		return "", fmt.Errorf("too many arguments")
+	}
+}
+
+func registryConfigPath(configPath *string) string {
+	if configPath == nil || *configPath == "" {
+		return "."
+	}
+	return *configPath
+}
+
+func resolveRegistryTargets(ctx context.Context, configPath string, flags *appCmdFlags, serverOverride string) ([]registryTarget, error) {
+	if serverOverride != "" {
+		normalized, err := helpers.NormalizeServerURL(serverOverride)
+		if err != nil {
+			return nil, fmt.Errorf("invalid server URL: %w", err)
+		}
+		return []registryTarget{{Server: normalized}}, nil
+	}
+
+	selected := appCmdFlags{}
+	if flags != nil {
+		selected = *flags
+	}
+	if err := selected.validateTargetFlags(); err != nil {
+		return nil, err
+	}
+
+	rawDeployConfig, format, err := configloader.Load(ctx, configPath, selected.targets, selected.all)
+	if err != nil {
+		return nil, fmt.Errorf("unable to load config: %w", err)
+	}
+	if format == "" {
+		format = rawDeployConfig.Format
+	}
+
+	resolvedDeployConfig, err := configloader.ResolveSecrets(ctx, rawDeployConfig, configPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve secrets: %w", err)
+	}
+
+	targets, err := configloader.ExtractTargets(resolvedDeployConfig, format)
+	if err != nil {
+		return nil, err
+	}
+
+	targetNames := make([]string, 0, len(targets))
+	for targetName := range targets {
+		targetNames = append(targetNames, targetName)
+	}
+	sort.Strings(targetNames)
+
+	seen := make(map[string]bool)
+	registryTargets := make([]registryTarget, 0, len(targetNames))
+	for _, targetName := range targetNames {
+		target := targets[targetName]
+		normalized, err := helpers.NormalizeServerURL(target.Server)
+		if err != nil {
+			return nil, fmt.Errorf("target '%s': invalid server URL %q: %w", targetName, target.Server, err)
+		}
+		if seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		targetCopy := target
+		registryTargets = append(registryTargets, registryTarget{
+			Server:       normalized,
+			TargetConfig: &targetCopy,
+		})
+	}
+
+	return registryTargets, nil
+}
+
+func displayRegistryListResults(results []registryListResult) {
+	multipleServers := len(results) > 1
+	rows := make([][]string, 0)
+	for _, result := range results {
+		if len(result.Response.Registries) == 0 {
+			ui.Info("No registry credentials configured on %s", result.Server)
+			continue
+		}
+		for _, registry := range result.Response.Registries {
+			if multipleServers {
+				rows = append(rows, []string{result.Server, registry.Server, registry.Username})
+			} else {
+				rows = append(rows, []string{registry.Server, registry.Username})
+			}
+		}
+	}
+
+	if len(rows) == 0 {
+		return
+	}
+	if multipleServers {
+		ui.Table([]string{"Server", "Registry", "Username"}, rows)
+		return
+	}
+	ui.Table([]string{"Registry", "Username"}, rows)
+}
+
+func registryAPI(ctx context.Context, targetConfig *config.TargetConfig, serverURL string) (*apiclient.APIClient, error) {
+	token, err := getToken(targetConfig, serverURL)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get token: %w", err)
 	}
@@ -137,8 +330,8 @@ func registryAPI(ctx context.Context, serverURL string) (*apiclient.APIClient, e
 	return api, nil
 }
 
-func registryLogin(ctx context.Context, serverURL string, request apitypes.RegistryLoginRequest) (*apitypes.RegistryEntry, error) {
-	api, err := registryAPI(ctx, serverURL)
+func registryLogin(ctx context.Context, targetConfig *config.TargetConfig, serverURL string, request apitypes.RegistryLoginRequest) (*apitypes.RegistryEntry, error) {
+	api, err := registryAPI(ctx, targetConfig, serverURL)
 	if err != nil {
 		return nil, err
 	}
@@ -150,8 +343,8 @@ func registryLogin(ctx context.Context, serverURL string, request apitypes.Regis
 	return &response, nil
 }
 
-func registryLogout(ctx context.Context, serverURL, registry string) error {
-	api, err := registryAPI(ctx, serverURL)
+func registryLogout(ctx context.Context, targetConfig *config.TargetConfig, serverURL, registry string) error {
+	api, err := registryAPI(ctx, targetConfig, serverURL)
 	if err != nil {
 		return err
 	}
@@ -162,8 +355,8 @@ func registryLogout(ctx context.Context, serverURL, registry string) error {
 	return nil
 }
 
-func registryList(ctx context.Context, serverURL string) (*apitypes.RegistriesResponse, error) {
-	api, err := registryAPI(ctx, serverURL)
+func registryList(ctx context.Context, targetConfig *config.TargetConfig, serverURL string) (*apitypes.RegistriesResponse, error) {
+	api, err := registryAPI(ctx, targetConfig, serverURL)
 	if err != nil {
 		return nil, err
 	}

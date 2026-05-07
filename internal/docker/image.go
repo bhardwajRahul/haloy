@@ -88,7 +88,8 @@ func dockerHubPullRateLimitHint(imageConfig config.Image) string {
 	if imageConfig.RegistryAuth == nil {
 		return "Hint: Docker Hub rate limit reached. " +
 			"Haloy pulled this Docker Hub image without registry credentials on the deployment server. " +
-			"Run 'haloy server registry login <server-url> docker.io --username <user> --password-stdin', " +
+			"Run 'haloy server registry login docker.io --username <user> --password-stdin', " +
+			"adding --targets or --all for multi-target configs, " +
 			"add Docker Hub credentials to image.registry for this target, use a registry mirror/cache, " +
 			"or wait for Docker Hub's pull limit window to reset. " +
 			"A local docker login is not sent to remote deployments."

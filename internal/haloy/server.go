@@ -30,7 +30,7 @@ func ServerCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
 	cmd.AddCommand(ServerAddCmd())
 	cmd.AddCommand(ServerDeleteCmd())
 	cmd.AddCommand(ServerListCmd())
-	cmd.AddCommand(ServerRegistryCmd())
+	cmd.AddCommand(ServerRegistryCmd(configPath, flags))
 	cmd.AddCommand(ServerLogsCmd(configPath, flags))
 	cmd.AddCommand(ServerVersionCmd(configPath, flags))
 
