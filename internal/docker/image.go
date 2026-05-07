@@ -24,15 +24,15 @@ func getRegistryAuthString(imageConfig *config.Image) (string, error) {
 	if auth == nil {
 		return "", nil
 	}
-	server := imageConfig.GetRegistryServer()
-	authConfig := registry.AuthConfig{
-		Username:      auth.Username.Value,
-		Password:      auth.Password.Value,
-		ServerAddress: server,
+	authWithServer := *auth
+	authWithServer.Server = imageConfig.GetRegistryServer()
+	authConfig, err := registryAuthConfig(authWithServer)
+	if err != nil {
+		return "", err
 	}
 	authStr, err := registry.EncodeAuthConfig(authConfig)
 	if err != nil {
-		return "", fmt.Errorf("failed to encode auth config for %s: %w", server, err)
+		return "", fmt.Errorf("failed to encode auth config for %s: %w", authConfig.ServerAddress, err)
 	}
 	return authStr, nil
 }
@@ -57,6 +57,18 @@ func isDockerHubPullRateLimitError(err error) bool {
 
 func shouldWarnUnauthenticatedDockerHubPull(imageConfig config.Image, registryAuth string) bool {
 	return registryAuth == "" && isDockerHubImage(imageConfig)
+}
+
+func isRegistryAuthRejectedError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "authentication required") ||
+		strings.Contains(message, "incorrect username or password") ||
+		strings.Contains(message, "unauthorized") ||
+		strings.Contains(message, "authorization failed")
 }
 
 func normalizedPullRef(imageConfig config.Image) string {
@@ -103,6 +115,14 @@ func dockerHubPullRateLimitHint(imageConfig config.Image) string {
 func formatImagePullError(imageRef string, imageConfig config.Image, err error) error {
 	if isDockerHubImage(imageConfig) && isDockerHubPullRateLimitError(err) {
 		return fmt.Errorf("failed to pull %s: %w\n%s", imageRef, err, dockerHubPullRateLimitHint(imageConfig))
+	}
+
+	if imageConfig.RegistryAuth != nil && isRegistryAuthRejectedError(err) {
+		registryServer := config.NormalizeRegistryServer(imageConfig.GetRegistryServer())
+		if registryServer == "docker.io" {
+			return fmt.Errorf("failed to pull %s: %w\nHint: Docker rejected the configured Docker Hub credentials. Use your Docker Hub username, not your email, and a Docker Hub access token. Update image.registry or re-run 'haloy server registry login docker.io --username <docker-hub-username> --password-stdin'.", imageRef, err)
+		}
+		return fmt.Errorf("failed to pull %s: %w\nHint: Docker rejected the configured registry credentials for %s. Update image.registry or re-run 'haloy server registry login %s --username <username> --password-stdin'.", imageRef, err, registryServer, registryServer)
 	}
 
 	if !strings.ContainsAny(imageRef, "/.") {
@@ -169,7 +189,11 @@ func EnsureImageUpToDate(ctx context.Context, cli *client.Client, logger *slog.L
 	}
 
 	// If we reach here, either the image doesn't exist locally or the remote digest doesn't match
-	logger.Info("Pulling image", "image", normalizedPullRef(imageConfig), "registry", config.NormalizeRegistryServer(imageConfig.GetRegistryServer()), "auth", registryAuthMode(registryAuth), "pull_policy", pullPolicy)
+	pullMessage := "Pulling image"
+	if registryAuth != "" {
+		pullMessage = "Pulling image with registry credentials"
+	}
+	logger.Info(pullMessage, "image", normalizedPullRef(imageConfig), "registry", config.NormalizeRegistryServer(imageConfig.GetRegistryServer()), "auth", registryAuthMode(registryAuth), "pull_policy", pullPolicy)
 	if shouldWarnUnauthenticatedDockerHubPull(imageConfig, registryAuth) {
 		logger.Warn("Pulling Docker Hub image without registry credentials; this may hit Docker Hub anonymous pull limits", "image", imageRef)
 	}

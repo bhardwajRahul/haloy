@@ -59,14 +59,21 @@ func (s *APIServer) handleRegistryLogin() http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		registries.Registries[server] = config.RegistryAuth{
+		auth := config.RegistryAuth{
 			Server:   server,
 			Username: config.ValueSource{Value: req.Username},
 			Password: config.ValueSource{Value: req.Password},
 		}
+		registries.Registries[server] = auth
 		if err := registries.Validate(); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
+		}
+		if s.registryLoginCheck != nil {
+			if err := s.registryLoginCheck(r.Context(), auth); err != nil {
+				http.Error(w, fmt.Sprintf("failed to verify registry credentials: %v", err), http.StatusBadRequest)
+				return
+			}
 		}
 		if err := saveServerRegistries(registries); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)

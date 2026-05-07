@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +17,11 @@ import (
 func TestHandleRegistryLoginStoresCredentials(t *testing.T) {
 	t.Setenv(constants.EnvVarDataDir, t.TempDir())
 	s := newTestAPIServerForDeploy()
+	var checkedAuth config.RegistryAuth
+	s.registryLoginCheck = func(ctx context.Context, auth config.RegistryAuth) error {
+		checkedAuth = auth
+		return nil
+	}
 
 	body := `{"server":"registry-1.docker.io","username":"docker-user","password":"docker-token"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/registries/login", strings.NewReader(body))
@@ -48,6 +55,42 @@ func TestHandleRegistryLoginStoresCredentials(t *testing.T) {
 	auth := registries.Registries["docker.io"]
 	if auth.Username.Value != "docker-user" || auth.Password.Value != "docker-token" {
 		t.Fatalf("stored auth = %#v, want stored credentials", auth)
+	}
+	if checkedAuth.Server != "docker.io" || checkedAuth.Username.Value != "docker-user" || checkedAuth.Password.Value != "docker-token" {
+		t.Fatalf("checked auth = %#v, want docker.io/docker-user credentials", checkedAuth)
+	}
+}
+
+func TestHandleRegistryLoginDoesNotStoreCredentialsWhenVerificationFails(t *testing.T) {
+	t.Setenv(constants.EnvVarDataDir, t.TempDir())
+	s := newTestAPIServerForDeploy()
+	s.registryLoginCheck = func(ctx context.Context, auth config.RegistryAuth) error {
+		return errors.New("docker login to docker.io failed: unauthorized")
+	}
+
+	body := `{"server":"docker.io","username":"docker-user","password":"bad-token"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/registries/login", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+
+	s.handleRegistryLogin().ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body = %q", rr.Code, http.StatusBadRequest, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "failed to verify registry credentials") {
+		t.Fatalf("body = %q, want verification failure", rr.Body.String())
+	}
+
+	path, err := config.ServerRegistriesPath()
+	if err != nil {
+		t.Fatalf("ServerRegistriesPath() error = %v", err)
+	}
+	registries, err := config.LoadServerRegistries(path)
+	if err != nil {
+		t.Fatalf("LoadServerRegistries() error = %v", err)
+	}
+	if len(registries.Registries) != 0 {
+		t.Fatalf("registries = %#v, want no stored credentials", registries.Registries)
 	}
 }
 

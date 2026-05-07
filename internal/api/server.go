@@ -8,6 +8,7 @@ import (
 
 	"github.com/haloydev/haloy/internal/apitypes"
 	"github.com/haloydev/haloy/internal/config"
+	"github.com/haloydev/haloy/internal/docker"
 	"github.com/haloydev/haloy/internal/logging"
 	"github.com/haloydev/haloy/internal/storage"
 	"golang.org/x/time/rate"
@@ -26,6 +27,7 @@ type APIServer struct {
 	imageDiskSpaceCheck    func(context.Context, apitypes.ImageDiskSpaceCheckRequest) (diskSpaceCheckResult, error)
 	imagePrune             func(context.Context, apitypes.ImagePruneRequest) (apitypes.ImagePruneResponse, error)
 	registryAuthProvider   func(config.Image) (*config.RegistryAuth, error)
+	registryLoginCheck     func(context.Context, config.RegistryAuth) error
 }
 
 func NewServer(apiToken string, db *storage.DB, logBroker logging.StreamPublisher, logLevel slog.Level) *APIServer {
@@ -39,6 +41,7 @@ func NewServer(apiToken string, db *storage.DB, logBroker logging.StreamPublishe
 		layerRateLimiter: NewRateLimiter(rate.Limit(50), 100), // 50 req/sec, burst of 100 for layer uploads
 	}
 	s.registryAuthProvider = loadServerRegistryAuthForImage
+	s.registryLoginCheck = docker.VerifyRegistryLogin
 	s.setupRoutes()
 	return s
 }

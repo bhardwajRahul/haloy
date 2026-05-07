@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
+	dockerregistry "github.com/docker/docker/api/types/registry"
 	"github.com/haloydev/haloy/internal/config"
 )
 
@@ -124,8 +125,57 @@ func TestNormalizedPullRef(t *testing.T) {
 	}
 }
 
+func TestGetRegistryAuthStringUsesDockerHubAuthAddress(t *testing.T) {
+	image := &config.Image{
+		Repository: "postgres",
+		Tag:        "18",
+		RegistryAuth: &config.RegistryAuth{
+			Server:   "docker.io",
+			Username: config.ValueSource{Value: "docker-user"},
+			Password: config.ValueSource{Value: "docker-token"},
+		},
+	}
+
+	authString, err := getRegistryAuthString(image)
+	if err != nil {
+		t.Fatalf("getRegistryAuthString() unexpected error = %v", err)
+	}
+	authConfig, err := dockerregistry.DecodeAuthConfig(authString)
+	if err != nil {
+		t.Fatalf("DecodeAuthConfig() unexpected error = %v", err)
+	}
+	if authConfig.ServerAddress != dockerHubAuthServerAddress {
+		t.Fatalf("ServerAddress = %q, want %q", authConfig.ServerAddress, dockerHubAuthServerAddress)
+	}
+}
+
+func TestGetRegistryAuthStringUsesRegistryHostForPrivateRegistry(t *testing.T) {
+	image := &config.Image{
+		Repository: "ghcr.io/example/app",
+		Tag:        "latest",
+		RegistryAuth: &config.RegistryAuth{
+			Server:   "https://ghcr.io",
+			Username: config.ValueSource{Value: "gh-user"},
+			Password: config.ValueSource{Value: "gh-token"},
+		},
+	}
+
+	authString, err := getRegistryAuthString(image)
+	if err != nil {
+		t.Fatalf("getRegistryAuthString() unexpected error = %v", err)
+	}
+	authConfig, err := dockerregistry.DecodeAuthConfig(authString)
+	if err != nil {
+		t.Fatalf("DecodeAuthConfig() unexpected error = %v", err)
+	}
+	if authConfig.ServerAddress != "ghcr.io" {
+		t.Fatalf("ServerAddress = %q, want ghcr.io", authConfig.ServerAddress)
+	}
+}
+
 func TestFormatImagePullError(t *testing.T) {
 	rateLimitErr := errors.New("Error response from daemon: error from registry: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit")
+	authErr := errors.New("Error response from daemon: authentication required - incorrect username or password")
 
 	tests := []struct {
 		name            string
@@ -182,6 +232,27 @@ func TestFormatImagePullError(t *testing.T) {
 			},
 			wantNotContains: []string{
 				"Docker Hub rate limit reached",
+				"if you intended to build this image locally",
+			},
+		},
+		{
+			name:     "authenticated docker hub auth rejection",
+			imageRef: "postgres:18",
+			image: config.Image{
+				Repository: "postgres",
+				Tag:        "18",
+				RegistryAuth: &config.RegistryAuth{
+					Username: config.ValueSource{Value: "user"},
+					Password: config.ValueSource{Value: "token"},
+				},
+			},
+			err: authErr,
+			wantContains: []string{
+				"Docker rejected the configured Docker Hub credentials",
+				"haloy server registry login docker.io",
+				"Docker Hub access token",
+			},
+			wantNotContains: []string{
 				"if you intended to build this image locally",
 			},
 		},
