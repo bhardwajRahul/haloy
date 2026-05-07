@@ -37,6 +37,58 @@ func getRegistryAuthString(imageConfig *config.Image) (string, error) {
 	return authStr, nil
 }
 
+func isDockerHubServer(server string) bool {
+	switch strings.ToLower(strings.TrimSpace(server)) {
+	case "docker.io", "index.docker.io", "registry-1.docker.io":
+		return true
+	default:
+		return false
+	}
+}
+
+func isDockerHubImage(imageConfig config.Image) bool {
+	return isDockerHubServer(imageConfig.GetRegistryServer())
+}
+
+func isDockerHubPullRateLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "increase-rate-limit") ||
+		(strings.Contains(message, "pull rate limit") && strings.Contains(message, "you have reached"))
+}
+
+func shouldWarnUnauthenticatedDockerHubPull(imageConfig config.Image, registryAuth string) bool {
+	return registryAuth == "" && isDockerHubImage(imageConfig)
+}
+
+func dockerHubPullRateLimitHint(imageConfig config.Image) string {
+	if imageConfig.RegistryAuth == nil {
+		return "Hint: Docker Hub rate limit reached. " +
+			"Haloy pulled this Docker Hub image without registry credentials on the deployment server. " +
+			"Add Docker Hub credentials to image.registry for this target, use a registry mirror/cache, " +
+			"or wait for Docker Hub's pull limit window to reset. " +
+			"A local docker login is not sent to remote deployments."
+	}
+
+	return "Hint: Docker Hub rate limit reached while using configured registry credentials. " +
+		"Check whether the account has quota available, use a paid Docker Hub account or registry mirror/cache, " +
+		"or wait for Docker Hub's pull limit window to reset."
+}
+
+func formatImagePullError(imageRef string, imageConfig config.Image, err error) error {
+	if isDockerHubImage(imageConfig) && isDockerHubPullRateLimitError(err) {
+		return fmt.Errorf("failed to pull %s: %w\n%s", imageRef, err, dockerHubPullRateLimitHint(imageConfig))
+	}
+
+	if !strings.ContainsAny(imageRef, "/.") {
+		return fmt.Errorf("failed to pull %s: %w\nHint: if you intended to build this image locally, remove the 'image' field from your config or set 'build: true'.", imageRef, err)
+	}
+	return fmt.Errorf("failed to pull %s: %w", imageRef, err)
+}
+
 func EnsureImageUpToDate(ctx context.Context, cli *client.Client, logger *slog.Logger, imageConfig config.Image) error {
 	imageRef := imageConfig.ImageRef()
 
@@ -78,15 +130,15 @@ func EnsureImageUpToDate(ctx context.Context, cli *client.Client, logger *slog.L
 
 	// If we reach here, either the image doesn't exist locally or the remote digest doesn't match
 	logger.Debug(fmt.Sprintf("Pulling image %s...", imageRef), "image", imageRef)
+	if shouldWarnUnauthenticatedDockerHubPull(imageConfig, registryAuth) {
+		logger.Warn("Pulling Docker Hub image without registry credentials; this may hit Docker Hub anonymous pull limits", "image", imageRef)
+	}
 
 	r, err := cli.ImagePull(ctx, imageRef, image.PullOptions{
 		RegistryAuth: registryAuth,
 	})
 	if err != nil {
-		if !strings.ContainsAny(imageRef, "/.") {
-			return fmt.Errorf("failed to pull %s: %w\nHint: if you intended to build this image locally, remove the 'image' field from your config or set 'build: true'.", imageRef, err)
-		}
-		return fmt.Errorf("failed to pull %s: %w", imageRef, err)
+		return formatImagePullError(imageRef, imageConfig, err)
 	}
 	defer r.Close()
 	// drain stream

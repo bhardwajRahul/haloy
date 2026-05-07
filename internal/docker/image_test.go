@@ -1,11 +1,183 @@
 package docker
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/haloydev/haloy/internal/config"
 )
+
+func TestIsDockerHubPullRateLimitError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "current docker hub unauthenticated message",
+			err:  errors.New("Error response from daemon: error from registry: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit"),
+			want: true,
+		},
+		{
+			name: "docker docs pull limit message",
+			err:  errors.New("You have reached your pull rate limit. You may increase the limit by authenticating and upgrading: https://www.docker.com/increase-rate-limits"),
+			want: true,
+		},
+		{
+			name: "ordinary pull error",
+			err:  errors.New("pull access denied, repository does not exist or may require authorization"),
+			want: false,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isDockerHubPullRateLimitError(tt.err)
+			if got != tt.want {
+				t.Fatalf("isDockerHubPullRateLimitError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestShouldWarnUnauthenticatedDockerHubPull(t *testing.T) {
+	tests := []struct {
+		name         string
+		image        config.Image
+		registryAuth string
+		want         bool
+	}{
+		{
+			name:  "official docker hub image without auth",
+			image: config.Image{Repository: "postgres", Tag: "18"},
+			want:  true,
+		},
+		{
+			name:         "official docker hub image with auth",
+			image:        config.Image{Repository: "postgres", Tag: "18"},
+			registryAuth: "auth",
+			want:         false,
+		},
+		{
+			name:  "explicit docker hub image without auth",
+			image: config.Image{Repository: "docker.io/library/postgres", Tag: "18"},
+			want:  true,
+		},
+		{
+			name:  "non docker hub image without auth",
+			image: config.Image{Repository: "ghcr.io/example/postgres", Tag: "18"},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := shouldWarnUnauthenticatedDockerHubPull(tt.image, tt.registryAuth)
+			if got != tt.want {
+				t.Fatalf("shouldWarnUnauthenticatedDockerHubPull() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFormatImagePullError(t *testing.T) {
+	rateLimitErr := errors.New("Error response from daemon: error from registry: You have reached your unauthenticated pull rate limit. https://www.docker.com/increase-rate-limit")
+
+	tests := []struct {
+		name            string
+		imageRef        string
+		image           config.Image
+		err             error
+		wantContains    []string
+		wantNotContains []string
+	}{
+		{
+			name:     "unauthenticated docker hub rate limit",
+			imageRef: "postgres:18",
+			image:    config.Image{Repository: "postgres", Tag: "18"},
+			err:      rateLimitErr,
+			wantContains: []string{
+				"Docker Hub rate limit reached",
+				"without registry credentials",
+				"image.registry",
+				"local docker login is not sent",
+			},
+			wantNotContains: []string{
+				"if you intended to build this image locally",
+			},
+		},
+		{
+			name:     "authenticated docker hub rate limit",
+			imageRef: "postgres:18",
+			image: config.Image{
+				Repository: "postgres",
+				Tag:        "18",
+				RegistryAuth: &config.RegistryAuth{
+					Username: config.ValueSource{Value: "user"},
+					Password: config.ValueSource{Value: "token"},
+				},
+			},
+			err: rateLimitErr,
+			wantContains: []string{
+				"Docker Hub rate limit reached",
+				"using configured registry credentials",
+			},
+			wantNotContains: []string{
+				"without registry credentials",
+				"if you intended to build this image locally",
+			},
+		},
+		{
+			name:     "non docker hub rate limit",
+			imageRef: "ghcr.io/example/postgres:18",
+			image:    config.Image{Repository: "ghcr.io/example/postgres", Tag: "18"},
+			err:      rateLimitErr,
+			wantContains: []string{
+				"failed to pull ghcr.io/example/postgres:18",
+			},
+			wantNotContains: []string{
+				"Docker Hub rate limit reached",
+				"if you intended to build this image locally",
+			},
+		},
+		{
+			name:     "shorthand ordinary pull error keeps build hint",
+			imageRef: "myapp:latest",
+			image:    config.Image{Repository: "myapp"},
+			err:      errors.New("pull access denied, repository does not exist or may require authorization"),
+			wantContains: []string{
+				"failed to pull myapp:latest",
+				"if you intended to build this image locally",
+			},
+			wantNotContains: []string{
+				"Docker Hub rate limit reached",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatImagePullError(tt.imageRef, tt.image, tt.err).Error()
+			for _, want := range tt.wantContains {
+				if !strings.Contains(got, want) {
+					t.Fatalf("formatImagePullError() = %q, want to contain %q", got, want)
+				}
+			}
+			for _, unwanted := range tt.wantNotContains {
+				if strings.Contains(got, unwanted) {
+					t.Fatalf("formatImagePullError() = %q, want not to contain %q", got, unwanted)
+				}
+			}
+		})
+	}
+}
 
 func TestSelectImageTagsToRemove_IgnoreDeploymentCountsTowardKeepLimit(t *testing.T) {
 	candidates := []removableImageTag{
