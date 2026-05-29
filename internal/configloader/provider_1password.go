@@ -9,6 +9,10 @@ import (
 	"github.com/haloydev/haloy/internal/config"
 )
 
+const onePasswordWaitMessage = "Resolving secrets from 1password"
+
+var run1PasswordCLICommand = cmdexec.RunCLICommandWithOptions
+
 func fetchFrom1Password(ctx context.Context, config config.OnePasswordSourceConfig) (map[string]string, error) {
 	if config.Item == "" || config.Vault == "" {
 		return nil, fmt.Errorf("1Password source requires 'vault' and 'item' to be set")
@@ -27,7 +31,9 @@ func fetchFrom1Password(ctx context.Context, config config.OnePasswordSourceConf
 		} `json:"fields"`
 	}
 
-	output, err := cmdexec.RunCLICommand(ctx, "op", args...)
+	output, err := run1PasswordCLICommand(ctx, cmdexec.CLICommandOptions{
+		WaitMessage: onePasswordWaitMessage,
+	}, "op", args...)
 	if err != nil {
 		return nil, err
 	}

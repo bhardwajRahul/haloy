@@ -1,12 +1,14 @@
 package cmdexec
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRunCLICommandInDir_Succeeds(t *testing.T) {
@@ -72,6 +74,117 @@ func TestRunCLICommandInDir_ReportsMissingCommand(t *testing.T) {
 	}
 }
 
+func TestRunCLICommandWithOptions_FastCommandDoesNotPrintWaitMessage(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	stderr := configureCLIWaitMessageTestDoubles(t, true)
+
+	output, err := RunCLICommandWithOptions(
+		context.Background(),
+		CLICommandOptions{WaitMessage: "waiting", WaitDelay: 100 * time.Millisecond},
+		helperProcessPath(t),
+		"-test.run=TestHelperProcess",
+		"--",
+		"stdout",
+		"done",
+	)
+	if err != nil {
+		t.Fatalf("RunCLICommandWithOptions() unexpected error: %v", err)
+	}
+	if output != "done" {
+		t.Fatalf("RunCLICommandWithOptions() output = %q, want done", output)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("RunCLICommandWithOptions() stderr = %q, want no wait message", stderr.String())
+	}
+}
+
+func TestRunCLICommandWithOptions_SlowCommandPrintsWaitMessageOnce(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	stderr := configureCLIWaitMessageTestDoubles(t, true)
+
+	output, err := RunCLICommandWithOptions(
+		context.Background(),
+		CLICommandOptions{WaitMessage: "waiting", WaitDelay: 10 * time.Millisecond},
+		helperProcessPath(t),
+		"-test.run=TestHelperProcess",
+		"--",
+		"sleep-stdout",
+		"50ms",
+		"done",
+	)
+	if err != nil {
+		t.Fatalf("RunCLICommandWithOptions() unexpected error: %v", err)
+	}
+	if output != "done" {
+		t.Fatalf("RunCLICommandWithOptions() output = %q, want done", output)
+	}
+	if got, want := stderr.String(), "waiting\n"; got != want {
+		t.Fatalf("RunCLICommandWithOptions() stderr = %q, want %q", got, want)
+	}
+}
+
+func TestRunCLICommandWithOptions_NonTerminalDoesNotPrintWaitMessage(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+	stderr := configureCLIWaitMessageTestDoubles(t, false)
+
+	output, err := RunCLICommandWithOptions(
+		context.Background(),
+		CLICommandOptions{WaitMessage: "waiting", WaitDelay: 10 * time.Millisecond},
+		helperProcessPath(t),
+		"-test.run=TestHelperProcess",
+		"--",
+		"sleep-stdout",
+		"50ms",
+		"done",
+	)
+	if err != nil {
+		t.Fatalf("RunCLICommandWithOptions() unexpected error: %v", err)
+	}
+	if output != "done" {
+		t.Fatalf("RunCLICommandWithOptions() output = %q, want done", output)
+	}
+	if stderr.String() != "" {
+		t.Fatalf("RunCLICommandWithOptions() stderr = %q, want no wait message", stderr.String())
+	}
+}
+
+func TestRunCLICommand_ReportsExitStderr(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+
+	_, err := RunCLICommand(
+		context.Background(),
+		helperProcessPath(t),
+		"-test.run=TestHelperProcess",
+		"--",
+		"stderr-exit-7",
+		"boom",
+	)
+	if err == nil {
+		t.Fatal("RunCLICommand() expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "command '") || !strings.Contains(err.Error(), "failed: boom") {
+		t.Fatalf("RunCLICommand() error = %q, want stderr detail", err.Error())
+	}
+}
+
+func configureCLIWaitMessageTestDoubles(t *testing.T, terminal bool) *bytes.Buffer {
+	t.Helper()
+
+	originalOutput := cliWaitMessageOutput
+	originalIsTerminal := cliWaitMessageIsTerminal
+
+	var stderr bytes.Buffer
+	cliWaitMessageOutput = &stderr
+	cliWaitMessageIsTerminal = func() bool { return terminal }
+
+	t.Cleanup(func() {
+		cliWaitMessageOutput = originalOutput
+		cliWaitMessageIsTerminal = originalIsTerminal
+	})
+
+	return &stderr
+}
+
 func helperProcessPath(t *testing.T) string {
 	t.Helper()
 
@@ -97,6 +210,26 @@ func TestHelperProcess(t *testing.T) {
 	mode := args[separator+1]
 	switch mode {
 	case "success":
+		os.Exit(0)
+	case "stdout":
+		if separator+2 >= len(args) {
+			fmt.Fprintln(os.Stderr, "missing stdout value")
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stdout, args[separator+2])
+		os.Exit(0)
+	case "sleep-stdout":
+		if separator+3 >= len(args) {
+			fmt.Fprintln(os.Stderr, "missing sleep duration or stdout value")
+			os.Exit(2)
+		}
+		duration, err := time.ParseDuration(args[separator+2])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "parse duration: %v\n", err)
+			os.Exit(2)
+		}
+		time.Sleep(duration)
+		fmt.Fprintln(os.Stdout, args[separator+3])
 		os.Exit(0)
 	case "check-workdir":
 		if separator+2 >= len(args) {
@@ -130,6 +263,13 @@ func TestHelperProcess(t *testing.T) {
 		}
 		os.Exit(0)
 	case "exit-7":
+		os.Exit(7)
+	case "stderr-exit-7":
+		if separator+2 >= len(args) {
+			fmt.Fprintln(os.Stderr, "missing stderr value")
+			os.Exit(2)
+		}
+		fmt.Fprintln(os.Stderr, args[separator+2])
 		os.Exit(7)
 	default:
 		fmt.Fprintf(os.Stderr, "unknown helper mode %q\n", mode)
