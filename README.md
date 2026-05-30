@@ -116,7 +116,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and contribution gu
 Local builds can embed Git-derived version metadata:
 
 ```bash
-make build
+task build
 ```
 
 Releases are tag-driven. To cut a release:

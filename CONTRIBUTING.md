@@ -2,13 +2,13 @@ Contributions are welcome under the [MIT License](LICENSE). Here's how to get in
 
 ## Getting Started
 
-Prerequisites: [Go 1.25](https://go.dev/dl/) and [Docker](https://docs.docker.com/get-docker/).
+Prerequisites: [Go 1.25](https://go.dev/dl/), [Docker](https://docs.docker.com/get-docker/), and [Task](https://taskfile.dev/docs/installation).
 
 ```bash
 git clone https://github.com/haloydev/haloy.git
 cd haloy
-make tools
-make build
+task tools
+task build
 ```
 
 Key directories:
@@ -19,10 +19,10 @@ Key directories:
 
 ## Development Workflow
 
-- `make fmt` - format code
-- `make test` - run tests
-- `make lint` - run linter
-- `make ci-test` - run all CI checks locally (formatting, linting, tests). Run this before pushing.
+- `task fmt` - format code
+- `task test` - run tests
+- `task lint` - run linter
+- `task ci-test` - run all CI checks locally (formatting, linting, tests). Run this before pushing.
 
 ## Submitting Changes
 
@@ -32,7 +32,7 @@ Small bug fixes and improvements can go straight to a PR.
 
 1. Fork the repo and branch from `main`
 2. Make your changes
-3. Run `make ci-test`
+3. Run `task ci-test`
 4. Open a PR against `main`
 
 Keep PRs focused: one logical change per PR.

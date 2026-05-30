@@ -233,7 +233,7 @@ main() {
     info "Branch:               ${GREEN}$current_branch${NC}"
     echo ""
     echo "The following actions will be performed:"
-    echo "  1. Run tests (make ci-test)"
+    echo "  1. Run tests (task ci-test)"
     echo "  2. Create annotated tag $version_tag on HEAD"
     echo "  3. git push origin $version_tag"
     echo ""
@@ -245,8 +245,8 @@ main() {
     fi
 
     echo ""
-    info "Running tests (make ci-test)..."
-    make ci-test
+    info "Running tests (task ci-test)..."
+    task ci-test
     success "Tests passed"
     echo ""
 

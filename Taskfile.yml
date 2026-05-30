@@ -1,0 +1,68 @@
+version: '3'
+
+vars:
+  VERSION:
+    sh: git describe --tags --dirty --always --match 'v*' 2>/dev/null || echo dev
+  GO_LDFLAGS: -s -w -X github.com/haloydev/haloy/internal/constants.Version={{.VERSION}}
+
+tasks:
+  tools:
+    desc: Install required tools
+    cmds:
+      - go install mvdan.cc/gofumpt@latest
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test -v ./...
+
+  lint:
+    desc: Run linting
+    cmds:
+      - go vet ./...
+
+  fmt:
+    desc: Format code
+    cmds:
+      - gofumpt -w .
+
+  check-fmt:
+    desc: Check if code is formatted
+    cmds:
+      - |
+        if [ "$(gofumpt -l .)" != "" ]; then
+          echo "The following files are not properly formatted:"
+          gofumpt -l .
+          echo "Run 'task fmt' to fix formatting issues"
+          exit 1
+        fi
+
+  ci-test:
+    desc: Run all CI checks locally
+    cmds:
+      - task: test
+      - task: lint
+      - task: check-fmt
+      - echo "All checks passed!"
+
+  build:
+    desc: Build all binaries
+    cmds:
+      - task: build-haloy
+      - task: build-haloyd
+
+  build-haloy:
+    desc: Build the haloy CLI
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - mkdir -p bin
+      - go build -trimpath -ldflags "{{.GO_LDFLAGS}}" -o bin/haloy ./cmd/haloy
+
+  build-haloyd:
+    desc: Build the haloyd daemon
+    env:
+      CGO_ENABLED: '0'
+    cmds:
+      - mkdir -p bin
+      - go build -trimpath -ldflags "{{.GO_LDFLAGS}}" -o bin/haloyd ./cmd/haloyd
