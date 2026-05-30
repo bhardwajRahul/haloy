@@ -119,7 +119,7 @@ Local builds can embed Git-derived version metadata:
 task build
 ```
 
-Releases are tag-driven. To cut a release:
+Releases are tag-driven. Cutting a release requires [Task](https://taskfile.dev/docs/installation):
 
 ```bash
 ./tools/create-release-tag.sh --next

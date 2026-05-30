@@ -36,6 +36,32 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
+check_release_prerequisites() {
+    if ! command -v task > /dev/null 2>&1; then
+        error "Missing required command: task"
+        echo ""
+        echo "Install Task before cutting a release:"
+        echo "  brew install go-task"
+        exit 1
+    fi
+
+    if ! command -v go > /dev/null 2>&1; then
+        error "Missing required command: go"
+        echo ""
+        echo "Install Go before cutting a release:"
+        echo "  https://go.dev/dl/"
+        exit 1
+    fi
+
+    if ! command -v gofumpt > /dev/null 2>&1; then
+        error "Missing required command: gofumpt"
+        echo ""
+        echo "Install project tools before cutting a release:"
+        echo "  task tools"
+        exit 1
+    fi
+}
+
 usage() {
     echo "Usage: $0 <version-or-tag>"
     echo "       $0 --next [channel]"
@@ -197,6 +223,8 @@ main() {
     local repo_root
     repo_root=$(git rev-parse --show-toplevel)
     cd "$repo_root"
+
+    check_release_prerequisites
 
     fetch_remote_tags
 
