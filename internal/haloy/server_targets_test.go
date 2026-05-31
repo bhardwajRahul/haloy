@@ -3,6 +3,7 @@ package haloy
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -101,6 +102,98 @@ targets:
 	}
 	if !reflect.DeepEqual(servers[0].TargetNames, []string{"worker"}) {
 		t.Fatalf("target names = %#v, want worker", servers[0].TargetNames)
+	}
+}
+
+func TestResolveServerTargetsIgnoresUnrelatedMissingSecrets(t *testing.T) {
+	configPath := writeTestConfig(t, `
+server: haloy.example.com
+api_token:
+  value: test-token
+env:
+  - name: BACKUP_WALG_S3_PREFIX
+    from:
+      secret: onepassword:veihelse-secrets:backup_walg_s3_prefix
+image:
+  repository: example/app
+  build_config:
+    args:
+      - name: UNUSED_BUILD_SECRET
+        from:
+          secret: onepassword:veihelse-secrets:missing_build_secret
+targets:
+  api:
+    domains:
+      - domain: api.example.com
+`)
+	flags := &appCmdFlags{}
+	cmd := newServerTargetsTestCommand(flags)
+
+	servers, err := resolveServerTargets(context.Background(), cmd, configPath, flags)
+	if err != nil {
+		t.Fatalf("resolveServerTargets error = %v", err)
+	}
+
+	if len(servers) != 1 {
+		t.Fatalf("server count = %d, want 1", len(servers))
+	}
+	if servers[0].TargetConfig.APIToken == nil || servers[0].TargetConfig.APIToken.Value != "test-token" {
+		t.Fatalf("target API token = %#v, want literal test-token", servers[0].TargetConfig.APIToken)
+	}
+}
+
+func TestResolveServerTargetsResolvesAPITokenFromEnv(t *testing.T) {
+	t.Setenv("HALOY_TEST_SERVER_TOKEN", "resolved-token")
+
+	configPath := writeTestConfig(t, `
+server: haloy.example.com
+api_token:
+  from:
+    env: HALOY_TEST_SERVER_TOKEN
+targets:
+  api:
+    domains:
+      - domain: api.example.com
+`)
+	flags := &appCmdFlags{}
+	cmd := newServerTargetsTestCommand(flags)
+
+	servers, err := resolveServerTargets(context.Background(), cmd, configPath, flags)
+	if err != nil {
+		t.Fatalf("resolveServerTargets error = %v", err)
+	}
+
+	if len(servers) != 1 {
+		t.Fatalf("server count = %d, want 1", len(servers))
+	}
+	token := servers[0].TargetConfig.APIToken
+	if token == nil || token.Value != "resolved-token" || token.From != nil {
+		t.Fatalf("target API token = %#v, want resolved env token", token)
+	}
+}
+
+func TestResolveServerTargetsFailsForMissingAPITokenSecret(t *testing.T) {
+	configPath := writeTestConfig(t, `
+server: haloy.example.com
+api_token:
+  from:
+    secret: onepassword:server-secrets:api-token
+targets:
+  api:
+    domains:
+      - domain: api.example.com
+`)
+	flags := &appCmdFlags{}
+	cmd := newServerTargetsTestCommand(flags)
+
+	_, err := resolveServerTargets(context.Background(), cmd, configPath, flags)
+	if err == nil {
+		t.Fatal("expected missing API token secret to fail")
+	}
+	for _, want := range []string{"failed to resolve API token", "from.secret"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("expected error to contain %q, got: %v", want, err)
+		}
 	}
 }
 

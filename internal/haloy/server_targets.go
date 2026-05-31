@@ -34,12 +34,7 @@ func resolveServerTargets(ctx context.Context, cmd *cobra.Command, configPath st
 		format = deployConfig.Format
 	}
 
-	resolvedDeployConfig, err := configloader.ResolveSecrets(ctx, deployConfig, configPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve secrets: %w", err)
-	}
-
-	targets, err := configloader.ExtractTargets(resolvedDeployConfig, format)
+	targets, err := configloader.ExtractTargets(deployConfig, format)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +60,10 @@ func resolveServerTargets(ctx context.Context, cmd *cobra.Command, configPath st
 		}
 
 		targetCopy := target
+		if err := resolveServerTargetAPIToken(ctx, &targetCopy, deployConfig, configPath, format); err != nil {
+			return nil, fmt.Errorf("target '%s': failed to resolve API token: %w", targetName, err)
+		}
+
 		indexByServer[normalized] = len(servers)
 		servers = append(servers, serverTarget{
 			Server:       normalized,
@@ -74,6 +73,27 @@ func resolveServerTargets(ctx context.Context, cmd *cobra.Command, configPath st
 	}
 
 	return servers, nil
+}
+
+func resolveServerTargetAPIToken(ctx context.Context, target *config.TargetConfig, deployConfig config.DeployConfig, configPath, format string) error {
+	if target == nil || target.APIToken == nil || target.APIToken.From == nil {
+		return nil
+	}
+
+	tokenOnlyConfig := config.DeployConfig{
+		TargetConfig: config.TargetConfig{
+			APIToken: target.APIToken,
+		},
+		SecretProviders: deployConfig.SecretProviders,
+	}
+	tokenOnlyConfig.Format = format
+
+	resolvedConfig, err := configloader.ResolveSecrets(ctx, tokenOnlyConfig, configPath)
+	if err != nil {
+		return err
+	}
+	target.APIToken = resolvedConfig.APIToken
+	return nil
 }
 
 func loadServerTargetsDeployConfig(ctx context.Context, cmd *cobra.Command, configPath string, flags appCmdFlags) (config.DeployConfig, string, error) {
