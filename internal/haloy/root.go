@@ -39,7 +39,7 @@ func NewRootCmd() *cobra.Command {
 		Short: "haloy builds and runs Docker containers based on a YAML config",
 		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
 			// Skip commands that don't need any config or validation
-			if isDirectSubcommand(cmd) && (cmd.Name() == "completion" || cmd.Name() == "version") {
+			if isDirectSubcommand(cmd) && (cmd.Name() == "completion" || cmd.Name() == "version" || cmd.Name() == "__progress-demo") {
 				return nil
 			}
 
@@ -93,6 +93,7 @@ func NewRootCmd() *cobra.Command {
 		validateCmd,
 
 		CompletionCmd(),
+		ProgressDemoCmd(),
 		VersionCmd(),
 	)
 

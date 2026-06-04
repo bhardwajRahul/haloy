@@ -2,12 +2,30 @@ package ui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/charmbracelet/x/term"
+)
+
+const (
+	defaultProgressBarWidth = 20
+	minProgressBarWidth     = 4
+)
+
+var (
+	progressOutput    = func() io.Writer { return os.Stdout }
+	progressTermWidth = func() int {
+		width, _, err := term.GetSize(os.Stdout.Fd())
+		if err != nil || width <= 0 {
+			return 0
+		}
+		return width
+	}
 )
 
 // ProgressBar displays an aggregate progress bar that can be updated from multiple goroutines
@@ -18,8 +36,8 @@ type ProgressBar struct {
 	totalItems  int32
 	description string
 	mu          sync.Mutex
-	lastLineLen int
 	showBytes   bool
+	termWidth   int
 }
 
 // ProgressBarConfig configures the progress bar display
@@ -28,6 +46,7 @@ type ProgressBarConfig struct {
 	TotalBytes  int64
 	TotalItems  int
 	ShowBytes   bool // if true, shows bytes; if false, shows items only
+	TermWidth   int  // optional terminal width override; 0 auto-detects
 }
 
 // NewProgressBar creates a new aggregate progress bar
@@ -37,6 +56,7 @@ func NewProgressBar(cfg ProgressBarConfig) *ProgressBar {
 		totalItems:  int32(cfg.TotalItems),
 		description: cfg.Description,
 		showBytes:   cfg.ShowBytes,
+		termWidth:   cfg.TermWidth,
 	}
 	pb.render()
 	return pb
@@ -58,8 +78,7 @@ func (p *ProgressBar) CompleteItem() {
 func (p *ProgressBar) Finish() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// Clear the line and print final state
-	fmt.Fprint(os.Stdout, "\r"+strings.Repeat(" ", p.lastLineLen)+"\r")
+	fmt.Fprint(progressOutput(), "\r", ansi.EraseLineRight)
 }
 
 func (p *ProgressBar) render() {
@@ -69,6 +88,63 @@ func (p *ProgressBar) render() {
 	current := p.current.Load()
 	completed := p.completed.Load()
 
+	line := p.buildLine(current, completed)
+	fmt.Fprint(progressOutput(), "\r", ansi.EraseLineRight, line)
+}
+
+func (p *ProgressBar) buildLine(current int64, completed int32) string {
+	width := p.maxLineWidth()
+	prefix := infoPrefix()
+	status := p.status(current, completed)
+	line := p.formatLine(prefix, status, defaultProgressBarWidth, current)
+
+	if width <= 0 || ansi.StringWidth(line) <= width {
+		return line
+	}
+
+	fixedWidth := ansi.StringWidth(p.formatLineWithBar(prefix, "", status))
+	barWidth := width - fixedWidth
+	if barWidth >= minProgressBarWidth {
+		line = p.formatLine(prefix, status, min(barWidth, defaultProgressBarWidth), current)
+		if ansi.StringWidth(line) <= width {
+			return line
+		}
+	}
+
+	compactStatus := fmt.Sprintf("%d/%d", completed, p.totalItems)
+	for _, candidateBarWidth := range []int{minProgressBarWidth, 0} {
+		line = p.formatLine(prefix, compactStatus, candidateBarWidth, current)
+		if ansi.StringWidth(line) <= width {
+			return line
+		}
+	}
+
+	return ansi.Truncate(line, width, "")
+}
+
+func (p *ProgressBar) maxLineWidth() int {
+	width := p.termWidth
+	if width <= 0 {
+		width = progressTermWidth()
+	}
+	if width <= 1 {
+		return width
+	}
+	return width - 1
+}
+
+func (p *ProgressBar) formatLine(prefix, status string, barWidth int, current int64) string {
+	if barWidth <= 0 {
+		return fmt.Sprintf("%s %s %s", prefix, p.description, status)
+	}
+	return p.formatLineWithBar(prefix, p.bar(current, barWidth), status)
+}
+
+func (p *ProgressBar) formatLineWithBar(prefix, bar, status string) string {
+	return fmt.Sprintf("%s %s [%s] %s", prefix, p.description, bar, status)
+}
+
+func (p *ProgressBar) bar(current int64, barWidth int) string {
 	// Calculate percentage
 	var percent float64
 	if p.total > 0 {
@@ -78,35 +154,20 @@ func (p *ProgressBar) render() {
 		percent = 100
 	}
 
-	// Build progress bar
-	barWidth := 20
 	filledWidth := min(int(percent/100*float64(barWidth)), barWidth)
 
 	filled := strings.Repeat("█", filledWidth)
 	empty := strings.Repeat("░", barWidth-filledWidth)
-	bar := filled + empty
+	return filled + empty
+}
 
-	// Build status text
-	var status string
+func (p *ProgressBar) status(current int64, completed int32) string {
 	if p.showBytes && p.total > 0 {
-		status = fmt.Sprintf("%d/%d (%s / %s)",
+		return fmt.Sprintf("%d/%d (%s / %s)",
 			completed, p.totalItems,
 			formatBytes(current), formatBytes(p.total))
-	} else {
-		status = fmt.Sprintf("%d/%d", completed, p.totalItems)
 	}
-
-	// Format the line
-	prefix := lipgloss.NewStyle().Foreground(Blue).Render("●")
-	line := fmt.Sprintf("\r%s %s [%s] %s", prefix, p.description, bar, status)
-
-	// Pad to clear previous content
-	if len(line) < p.lastLineLen {
-		line += strings.Repeat(" ", p.lastLineLen-len(line))
-	}
-	p.lastLineLen = len(line)
-
-	fmt.Fprint(os.Stdout, line)
+	return fmt.Sprintf("%d/%d", completed, p.totalItems)
 }
 
 // formatBytes formats bytes into human-readable format

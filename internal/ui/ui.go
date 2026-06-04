@@ -27,28 +27,55 @@ var (
 	titleStyle = s.Bold(true)
 )
 
+const (
+	bulletSymbol  = "●"
+	debugSymbol   = "◆"
+	warningSymbol = "⚠"
+	errorSymbol   = "✖"
+)
+
+func infoPrefix() string {
+	return s.Foreground(Blue).Render(bulletSymbol)
+}
+
+func successPrefix() string {
+	return s.Foreground(Green).Render(bulletSymbol)
+}
+
+func debugPrefix() string {
+	return s.Foreground(Purple).Render(debugSymbol)
+}
+
+func warningPrefix() string {
+	return s.Foreground(Amber).Render(warningSymbol)
+}
+
+func errorPrefix() string {
+	return s.Foreground(Red).Render(errorSymbol)
+}
+
 func Basic(format string, a ...any) {
 	printStyledLines(os.Stdout, "", s, format, a...)
 }
 
 func Info(format string, a ...any) {
-	printStyledLines(os.Stdout, s.Foreground(Blue).Render("●"), s, format, a...)
+	printStyledLines(os.Stdout, infoPrefix(), s, format, a...)
 }
 
 func Success(format string, a ...any) {
-	printStyledLines(os.Stdout, s.Foreground(Green).Render("●"), s.Bold(true), format, a...)
+	printStyledLines(os.Stdout, successPrefix(), s.Bold(true), format, a...)
 }
 
 func Debug(format string, a ...any) {
-	printStyledLines(os.Stdout, s.Foreground(Purple).Render("◆"), s, format, a...)
+	printStyledLines(os.Stdout, debugPrefix(), s, format, a...)
 }
 
 func Warn(format string, a ...any) {
-	printStyledLines(os.Stderr, s.Foreground(Amber).Render("⚠"), s, format, a...)
+	printStyledLines(os.Stderr, warningPrefix(), s, format, a...)
 }
 
 func Error(format string, a ...any) {
-	printStyledLines(os.Stderr, s.Foreground(Red).Render("✖"), s, format, a...)
+	printStyledLines(os.Stderr, errorPrefix(), s, format, a...)
 }
 
 var lineStyle = lipgloss.NewStyle().
@@ -131,7 +158,7 @@ func (p *PrefixedUI) Success(format string, a ...any) {
 
 // Prompt asks the user for input and returns the response
 func Prompt(message string) (string, error) {
-	fmt.Fprint(os.Stdout, s.Foreground(Blue).Render("● ")+message+" ")
+	fmt.Fprint(os.Stdout, infoPrefix()+" "+message+" ")
 	reader := bufio.NewReader(os.Stdin)
 	response, err := reader.ReadString('\n')
 	if err != nil {
