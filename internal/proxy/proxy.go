@@ -368,6 +368,7 @@ func (p *Proxy) proxyToBackend(w http.ResponseWriter, r *http.Request, backendAd
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
 			pr.SetXForwarded()
+			pr.Out.Header.Del("X-Real-IP")
 			pr.Out.Host = r.Host
 		},
 		Transport:     p.transport,
@@ -400,6 +401,7 @@ func (p *Proxy) handleACMEChallenge(w http.ResponseWriter, r *http.Request) {
 	proxy := &httputil.ReverseProxy{
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
+			pr.Out.Header.Del("X-Real-IP")
 			pr.Out.Host = r.Host
 		},
 		Transport: p.transport,

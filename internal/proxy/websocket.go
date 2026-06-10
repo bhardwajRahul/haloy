@@ -9,6 +9,27 @@ import (
 	"time"
 )
 
+// setForwardedHeaders replaces any client-supplied forwarding headers with
+// trusted values, mirroring httputil.ReverseProxy's Rewrite + SetXForwarded
+// behavior for requests that bypass the reverse proxy.
+func setForwardedHeaders(r *http.Request) {
+	r.Header.Del("Forwarded")
+	r.Header.Del("X-Forwarded-For")
+	r.Header.Del("X-Forwarded-Host")
+	r.Header.Del("X-Forwarded-Proto")
+	r.Header.Del("X-Real-IP")
+
+	if clientIP, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		r.Header.Set("X-Forwarded-For", clientIP)
+	}
+	r.Header.Set("X-Forwarded-Host", r.Host)
+	if r.TLS != nil {
+		r.Header.Set("X-Forwarded-Proto", "https")
+	} else {
+		r.Header.Set("X-Forwarded-Proto", "http")
+	}
+}
+
 // isWebSocketUpgrade checks if the request is a WebSocket upgrade request.
 func isWebSocketUpgrade(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("Upgrade"), "websocket") &&
@@ -54,6 +75,8 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, route *R
 		return
 	}
 	defer clientConn.Close()
+
+	setForwardedHeaders(r)
 
 	// Forward the original HTTP request to the backend to initiate the WebSocket handshake
 	if err := r.Write(backendConn); err != nil {
