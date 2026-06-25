@@ -104,6 +104,14 @@ func Run(debug bool) {
 
 	apiServer := api.NewServer(apiToken, db, logBroker, logLevel)
 
+	// Get API domain for proxy routing (default to localhost for local development).
+	// Seed the proxy with this before the initial deployment discovery so the
+	// control plane stays reachable even if discovery or certificate renewal fails.
+	apiDomain := "localhost"
+	if haloydConfig != nil && haloydConfig.API.Domain != "" {
+		apiDomain = haloydConfig.API.Domain
+	}
+
 	// Initialize proxy certificate manager
 	certDir := filepath.Join(dataDir, constants.CertStorageDir)
 	proxyCertManager, err := proxy.NewCertManager(certDir, logger)
@@ -114,6 +122,10 @@ func Run(debug bool) {
 	// Create and start the proxy with the API server handler
 	proxyServer := proxy.New(logger, proxyCertManager, apiServer.Handler())
 	proxyCertManager.SetDomainResolver(proxyServer)
+	proxyServer.UpdateConfig(&proxy.Config{
+		Routes:    make(map[string]*proxy.Route),
+		APIDomain: strings.ToLower(apiDomain),
+	})
 
 	// Start proxy on HTTP and HTTPS ports
 	if err := proxyServer.Start(":80", ":443"); err != nil {
@@ -136,12 +148,6 @@ func Run(debug bool) {
 	certManager, err := NewCertificatesManager(certManagerConfig, certUpdateSignal)
 	if err != nil {
 		logging.LogFatal(logger, "Failed to create certificate manager", "error", err)
-	}
-
-	// Get API domain for proxy routing (default to localhost for local development)
-	apiDomain := "localhost"
-	if haloydConfig != nil && haloydConfig.API.Domain != "" {
-		apiDomain = haloydConfig.API.Domain
 	}
 
 	updaterConfig := UpdaterConfig{

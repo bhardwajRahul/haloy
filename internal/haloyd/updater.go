@@ -142,6 +142,25 @@ func (u *Updater) Update(ctx context.Context, logger *slog.Logger, reason Trigge
 	}
 
 	deployments := u.deploymentManager.Deployments()
+	proxyConfigUpdated := false
+	updateProxyConfig := func() error {
+		proxyConfig, err := u.buildProxyConfig(deployments)
+		if err != nil {
+			return fmt.Errorf("failed to build proxy config: %w", err)
+		}
+		u.proxy.UpdateConfig(proxyConfig)
+		proxyConfigUpdated = true
+		return nil
+	}
+
+	// On startup, make discovered healthy containers routable before synchronous
+	// certificate renewal. Existing certificates can still serve traffic, and a
+	// transient ACME failure should not leave the proxy with an empty route table.
+	if reason == TriggerReasonInitial {
+		if err := updateProxyConfig(); err != nil {
+			return result, err
+		}
+	}
 
 	// On initial startup, wait for the proxy to be ready before requesting certificates.
 	// This ensures the proxy is accepting connections to route ACME challenges from Let's Encrypt.
@@ -189,11 +208,11 @@ func (u *Updater) Update(ctx context.Context, logger *slog.Logger, reason Trigge
 	}
 
 	// Update proxy configuration
-	proxyConfig, err := u.buildProxyConfig(deployments)
-	if err != nil {
-		return result, fmt.Errorf("failed to build proxy config: %w", err)
+	if !proxyConfigUpdated {
+		if err := updateProxyConfig(); err != nil {
+			return result, err
+		}
 	}
-	u.proxy.UpdateConfig(proxyConfig)
 
 	// If an app is provided:
 	// - stop old containers, remove and log the result.
