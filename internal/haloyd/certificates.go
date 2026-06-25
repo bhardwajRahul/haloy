@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -324,7 +325,10 @@ func (m *ACMEClientManager) ObtainCertificate(ctx context.Context, domains []str
 	}
 
 	// Finalize the order
-	derCerts, _, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
+	derCerts, certURL, err := client.CreateOrderCert(ctx, order.FinalizeURL, csr, true)
+	if err != nil && certURL != "" && isIssuedCertificatePending(err) {
+		derCerts, err = fetchIssuedCertificateWithRetry(ctx, client, certURL, true)
+	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to finalize order: %w", err)
 	}
@@ -349,6 +353,40 @@ func (m *ACMEClientManager) ObtainCertificate(ctx context.Context, domains []str
 	})
 
 	return certBuf.Bytes(), keyPEM, nil
+}
+
+func fetchIssuedCertificateWithRetry(ctx context.Context, client *acme.Client, certURL string, bundle bool) ([][]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		derCerts, err := client.FetchCert(ctx, certURL, bundle)
+		if err == nil {
+			return derCerts, nil
+		}
+		if !isIssuedCertificatePending(err) {
+			return nil, err
+		}
+		lastErr = err
+
+		if attempt < 9 {
+			timer := time.NewTimer(time.Second)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	return nil, lastErr
+}
+
+func isIssuedCertificatePending(err error) bool {
+	var acmeErr *acme.Error
+	if !errors.As(err, &acmeErr) {
+		return false
+	}
+	return acmeErr.StatusCode == http.StatusNotFound &&
+		strings.Contains(strings.ToLower(acmeErr.Detail), "certificate not found")
 }
 
 type CertificatesManagerConfig struct {
