@@ -28,8 +28,16 @@ func TestProxyToBackend_ForwardedHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	backendHost, backendPort, err := net.SplitHostPort(backendURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	p := newTestProxy()
+	route := &Route{
+		Canonical: "example.com",
+		Backends:  []Backend{{IP: backendHost, Port: backendPort}},
+	}
 
 	r := httptest.NewRequest(http.MethodGet, "https://example.com/path", nil)
 	r.Header.Set("X-Forwarded-For", "1.2.3.4")
@@ -39,7 +47,7 @@ func TestProxyToBackend_ForwardedHeaders(t *testing.T) {
 	r.Header.Set("Forwarded", "for=1.2.3.4")
 
 	w := httptest.NewRecorder()
-	p.proxyToBackend(w, r, backendURL.Host, time.Now())
+	p.proxyToBackend(w, r, route, time.Now())
 
 	var headers http.Header
 	select {

@@ -50,8 +50,8 @@ func TestRouteBuilder_AddRoute(t *testing.T) {
 
 			// Check route exists with lowercased canonical
 			loweredCanonical := "example.com"
-			route, ok := config.Routes[loweredCanonical]
-			if !ok {
+			route := config.FindRoute(loweredCanonical)
+			if route == nil {
 				t.Fatalf("route not found for canonical %q", loweredCanonical)
 			}
 
@@ -63,13 +63,13 @@ func TestRouteBuilder_AddRoute(t *testing.T) {
 				t.Errorf("len(Backends) = %d, want %d", len(route.Backends), len(tt.backends))
 			}
 
-			// Check aliases are lowercased
+			// Check aliases are lowercased and resolve to the same route
 			for _, alias := range route.Aliases {
-				for i := range alias {
-					if alias[i] >= 'A' && alias[i] <= 'Z' {
-						t.Errorf("alias %q contains uppercase characters", alias)
-						break
-					}
+				if alias != strings.ToLower(alias) {
+					t.Errorf("alias %q contains uppercase characters", alias)
+				}
+				if config.FindRoute(alias) != route {
+					t.Errorf("FindRoute(%q) does not resolve to the canonical route", alias)
 				}
 			}
 		})
@@ -113,136 +113,53 @@ func TestRouteBuilder_SetAPIDomain(t *testing.T) {
 		t.Fatalf("Build() error = %v", err)
 	}
 
-	if config.APIDomain != "api.example.com" {
-		t.Errorf("APIDomain = %q, want %q", config.APIDomain, "api.example.com")
+	if config.APIDomain() != "api.example.com" {
+		t.Errorf("APIDomain() = %q, want %q", config.APIDomain(), "api.example.com")
 	}
 }
 
-func TestBuildConfigFromDeployments(t *testing.T) {
-	deployments := []DeploymentInfo{
-		{
-			AppName:   "app1",
-			Canonical: "app1.example.com",
-			Aliases:   []string{"www.app1.example.com"},
-			Instances: []InstanceInfo{{IP: "10.0.0.1", Port: "8080"}},
-		},
-		{
-			AppName:   "app2",
-			Canonical: "app2.example.com",
-			Aliases:   nil,
-			Instances: []InstanceInfo{{IP: "10.0.0.2", Port: "8080"}, {IP: "10.0.0.3", Port: "8080"}},
-		},
-	}
+func TestConfig_IsKnownHost(t *testing.T) {
+	rb := NewRouteBuilder()
+	rb.SetAPIDomain("api.example.com")
+	rb.AddRoute("app.example.com", []string{"www.app.example.com"}, nil)
 
-	config, err := BuildConfigFromDeployments(deployments, "api.example.com")
+	config, err := rb.Build()
 	if err != nil {
-		t.Fatalf("BuildConfigFromDeployments() error = %v", err)
+		t.Fatalf("Build() error = %v", err)
 	}
 
-	if len(config.Routes) != 2 {
-		t.Errorf("len(Routes) = %d, want 2", len(config.Routes))
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"app.example.com", true},
+		{"www.app.example.com", true},
+		{"API.EXAMPLE.COM", true},
+		{"unknown.example.com", false},
+		{"", false},
 	}
 
-	if config.APIDomain != "api.example.com" {
-		t.Errorf("APIDomain = %q, want %q", config.APIDomain, "api.example.com")
-	}
-
-	route1 := config.Routes["app1.example.com"]
-	if route1 == nil {
-		t.Fatal("route for app1.example.com not found")
-	}
-	if len(route1.Aliases) != 1 {
-		t.Errorf("app1 aliases = %d, want 1", len(route1.Aliases))
-	}
-	if len(route1.Backends) != 1 {
-		t.Errorf("app1 backends = %d, want 1", len(route1.Backends))
-	}
-
-	route2 := config.Routes["app2.example.com"]
-	if route2 == nil {
-		t.Fatal("route for app2.example.com not found")
-	}
-	if len(route2.Backends) != 2 {
-		t.Errorf("app2 backends = %d, want 2", len(route2.Backends))
+	for _, tt := range tests {
+		if got := config.IsKnownHost(tt.host); got != tt.want {
+			t.Errorf("IsKnownHost(%q) = %v, want %v", tt.host, got, tt.want)
+		}
 	}
 }
 
-func TestBuildConfigFromDeployments_SkipsEmptyCanonical(t *testing.T) {
-	deployments := []DeploymentInfo{
-		{
-			AppName:   "app-without-domain",
-			Canonical: "",
-			Instances: []InstanceInfo{{IP: "10.0.0.1", Port: "8080"}},
-		},
-		{
-			AppName:   "app-with-domain",
-			Canonical: "app.example.com",
-			Instances: []InstanceInfo{{IP: "10.0.0.2", Port: "8080"}},
-		},
-	}
+func TestConfig_ResolveCanonical(t *testing.T) {
+	rb := NewRouteBuilder()
+	rb.AddRoute("app.example.com", []string{"www.app.example.com"}, nil)
 
-	config, err := BuildConfigFromDeployments(deployments, "")
+	config, err := rb.Build()
 	if err != nil {
-		t.Fatalf("BuildConfigFromDeployments() error = %v", err)
+		t.Fatalf("Build() error = %v", err)
 	}
 
-	if len(config.Routes) != 1 {
-		t.Errorf("len(Routes) = %d, want 1 (should skip empty canonical)", len(config.Routes))
-	}
-}
-
-func TestBuildConfigFromHaloydDeployments(t *testing.T) {
-	deployments := map[string]HaloydDeployment{
-		"app1": {
-			AppName: "app1",
-			Domains: []HaloydDomain{
-				{Canonical: "app1.example.com", Aliases: []string{"www.app1.example.com"}},
-			},
-			Instances: []HaloydInstance{{IP: "10.0.0.1", Port: "8080"}},
-		},
-		"app2": {
-			AppName: "app2",
-			Domains: []HaloydDomain{
-				{Canonical: "app2.example.com", Aliases: nil},
-				{Canonical: "other.example.com", Aliases: nil},
-			},
-			Instances: []HaloydInstance{{IP: "10.0.0.2", Port: "8080"}},
-		},
+	if canonical, ok := config.ResolveCanonical("www.app.example.com"); !ok || canonical != "app.example.com" {
+		t.Errorf("ResolveCanonical(alias) = %q, %v; want app.example.com, true", canonical, ok)
 	}
 
-	config, err := BuildConfigFromHaloydDeployments(deployments, "api.example.com")
-	if err != nil {
-		t.Fatalf("BuildConfigFromHaloydDeployments() error = %v", err)
-	}
-
-	// app1 has 1 domain, app2 has 2 domains
-	if len(config.Routes) != 3 {
-		t.Errorf("len(Routes) = %d, want 3", len(config.Routes))
-	}
-
-	if config.APIDomain != "api.example.com" {
-		t.Errorf("APIDomain = %q, want %q", config.APIDomain, "api.example.com")
-	}
-}
-
-func TestBuildConfigFromHaloydDeployments_SkipsEmptyCanonical(t *testing.T) {
-	deployments := map[string]HaloydDeployment{
-		"app1": {
-			AppName: "app1",
-			Domains: []HaloydDomain{
-				{Canonical: "", Aliases: nil},
-				{Canonical: "app1.example.com", Aliases: nil},
-			},
-			Instances: []HaloydInstance{{IP: "10.0.0.1", Port: "8080"}},
-		},
-	}
-
-	config, err := BuildConfigFromHaloydDeployments(deployments, "")
-	if err != nil {
-		t.Fatalf("BuildConfigFromHaloydDeployments() error = %v", err)
-	}
-
-	if len(config.Routes) != 1 {
-		t.Errorf("len(Routes) = %d, want 1 (should skip empty canonical)", len(config.Routes))
+	if _, ok := config.ResolveCanonical("unknown.example.com"); ok {
+		t.Error("ResolveCanonical(unknown) = true, want false")
 	}
 }

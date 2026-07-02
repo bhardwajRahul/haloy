@@ -14,13 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
-
-// DomainResolver resolves alias domains to canonical domains.
-type DomainResolver interface {
-	ResolveCanonical(domain string) (string, bool)
-}
 
 // CertManager manages TLS certificates for the proxy.
 // It loads certificates from disk and reloads when explicitly told to via ReloadCertificates().
@@ -35,8 +31,9 @@ type CertManager struct {
 	// This prevents TLS handshake errors from being logged for scanner/bot traffic.
 	defaultCert *tls.Certificate
 
-	resolverMu sync.RWMutex
-	resolver   DomainResolver
+	// routes is the current routing snapshot, used to resolve aliases to
+	// canonical domains and to restrict disk lookups to known domains.
+	routes atomic.Pointer[Config]
 }
 
 // NewCertManager creates a new certificate manager.
@@ -99,29 +96,10 @@ func generateSelfSignedCert() (*tls.Certificate, error) {
 	return cert, nil
 }
 
-// Stop stops the certificate manager (no-op, retained for interface compatibility).
-func (cm *CertManager) Stop() {
-	// No-op: fsnotify watcher has been removed.
-	// Certificate reloading is now handled explicitly via ReloadCertificates().
-}
-
-// SetDomainResolver sets the resolver used for alias lookups.
-func (cm *CertManager) SetDomainResolver(resolver DomainResolver) {
-	cm.resolverMu.Lock()
-	cm.resolver = resolver
-	cm.resolverMu.Unlock()
-}
-
-func (cm *CertManager) resolveCanonical(domain string) (string, bool) {
-	cm.resolverMu.RLock()
-	resolver := cm.resolver
-	cm.resolverMu.RUnlock()
-
-	if resolver == nil {
-		return "", false
-	}
-
-	return resolver.ResolveCanonical(domain)
+// SetRouteTable updates the routing snapshot used for alias resolution and
+// known-host checks. Proxy.UpdateConfig calls this automatically.
+func (cm *CertManager) SetRouteTable(config *Config) {
+	cm.routes.Store(config)
 }
 
 func (cm *CertManager) getCachedCertificate(domain string) (*tls.Certificate, bool) {
@@ -153,13 +131,34 @@ func wildcardDomain(domain string) string {
 	return "*." + strings.Join(parts[1:], ".")
 }
 
+// validCertHostname reports whether name is a plausible DNS hostname. The SNI
+// value is attacker-controlled and used to build certificate file paths, so
+// anything that could escape the certificate directory must be rejected.
+func validCertHostname(name string) bool {
+	if name == "" || len(name) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(name, ".") {
+		if label == "" || len(label) > 63 {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') && c != '-' && c != '_' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // GetCertificate implements the tls.Config.GetCertificate callback.
 // It returns the certificate for the given SNI hostname.
 func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	serverName := strings.ToLower(hello.ServerName)
-	if serverName == "" {
-		// Return default self-signed cert for connections without SNI (scanners/bots).
-		// The request will be rejected with 404 at the HTTP handler level.
+	if !validCertHostname(serverName) {
+		// No SNI (scanners/bots) or a malformed name: return the default
+		// self-signed cert. The request is rejected at the HTTP handler level.
 		return cm.defaultCert, nil
 	}
 
@@ -167,13 +166,21 @@ func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 		return cert, nil
 	}
 
-	if cert, err := cm.loadAndCacheCertificate(serverName); err == nil {
-		return cert, nil
+	// Only touch disk for domains we actually route, so scanner traffic with
+	// random SNI values stays away from the filesystem. A nil route table
+	// (not set yet) is treated as permissive.
+	routes := cm.routes.Load()
+	known := routes == nil || routes.IsKnownHost(serverName)
+
+	if known {
+		if cert, err := cm.loadAndCacheCertificate(serverName); err == nil {
+			return cert, nil
+		}
 	}
 
-	if canonical, ok := cm.resolveCanonical(serverName); ok {
-		canonical = strings.ToLower(canonical)
-		if canonical != "" && canonical != serverName {
+	// Aliases are covered by their canonical domain's certificate.
+	if routes != nil {
+		if canonical, ok := routes.ResolveCanonical(serverName); ok && canonical != serverName {
 			if cert, ok := cm.getCachedCertificate(canonical); ok {
 				return cert, nil
 			}
@@ -183,12 +190,14 @@ func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 		}
 	}
 
-	if wildcard := wildcardDomain(serverName); wildcard != "" {
-		if cert, ok := cm.getCachedCertificate(wildcard); ok {
-			return cert, nil
-		}
-		if cert, err := cm.loadAndCacheCertificate(wildcard); err == nil {
-			return cert, nil
+	if known {
+		if wildcard := wildcardDomain(serverName); wildcard != "" {
+			if cert, ok := cm.getCachedCertificate(wildcard); ok {
+				return cert, nil
+			}
+			if cert, err := cm.loadAndCacheCertificate(wildcard); err == nil {
+				return cert, nil
+			}
 		}
 	}
 
@@ -265,29 +274,4 @@ func (cm *CertManager) loadCertificate(domain string) (*tls.Certificate, error) 
 	}
 
 	return &cert, nil
-}
-
-// HasCertificate checks if a certificate exists for the given domain.
-func (cm *CertManager) HasCertificate(domain string) bool {
-	domain = strings.ToLower(domain)
-
-	cm.mu.RLock()
-	_, ok := cm.certs[domain]
-	cm.mu.RUnlock()
-
-	if ok {
-		return true
-	}
-
-	// Check if file exists on disk
-	certPath := filepath.Join(cm.certDir, domain+".pem")
-	_, err := os.Stat(certPath)
-	return err == nil
-}
-
-// CertificateCount returns the number of loaded certificates.
-func (cm *CertManager) CertificateCount() int {
-	cm.mu.RLock()
-	defer cm.mu.RUnlock()
-	return len(cm.certs)
 }

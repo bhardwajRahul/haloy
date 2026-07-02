@@ -121,11 +121,13 @@ func Run(debug bool) {
 
 	// Create and start the proxy with the API server handler
 	proxyServer := proxy.New(logger, proxyCertManager, apiServer.Handler())
-	proxyCertManager.SetDomainResolver(proxyServer)
-	proxyServer.UpdateConfig(&proxy.Config{
-		Routes:    make(map[string]*proxy.Route),
-		APIDomain: strings.ToLower(apiDomain),
-	})
+	initialRoutes := proxy.NewRouteBuilder()
+	initialRoutes.SetAPIDomain(apiDomain)
+	initialConfig, err := initialRoutes.Build()
+	if err != nil {
+		logging.LogFatal(logger, "Failed to build initial proxy config", "error", err)
+	}
+	proxyServer.UpdateConfig(initialConfig)
 
 	// Start proxy on HTTP and HTTPS ports
 	if err := proxyServer.Start(":80", ":443"); err != nil {
@@ -336,6 +338,11 @@ func Run(debug bool) {
 
 		case err := <-errorsChan:
 			logger.Error("Error from docker events", "error", err)
+
+		case err := <-proxyServer.Err():
+			// A dead listener means no traffic is being served; exit so
+			// systemd restarts haloyd.
+			logging.LogFatal(logger, "Proxy listener failed", "error", err)
 
 		case <-sigChan:
 			logger.Info("Received shutdown signal, stopping haloyd...")

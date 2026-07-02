@@ -144,7 +144,7 @@ func (u *Updater) Update(ctx context.Context, logger *slog.Logger, reason Trigge
 	deployments := u.deploymentManager.Deployments()
 	proxyConfigUpdated := false
 	updateProxyConfig := func() error {
-		proxyConfig, err := u.buildProxyConfig(deployments)
+		proxyConfig, err := buildProxyConfig(deployments, u.deploymentManager.FailedDeployments(), u.apiDomain, nil)
 		if err != nil {
 			return fmt.Errorf("failed to build proxy config: %w", err)
 		}
@@ -302,57 +302,6 @@ func (r *UpdateResult) GetAppFailures(appName string) []FailedContainer {
 		}
 	}
 	return failures
-}
-
-// buildProxyConfig converts deployments to proxy configuration.
-func (u *Updater) buildProxyConfig(deployments map[string]Deployment) (*proxy.Config, error) {
-	haloydDeployments := make(map[string]proxy.HaloydDeployment)
-
-	for appName, d := range deployments {
-		var domains []proxy.HaloydDomain
-		for _, domain := range d.Labels.Domains {
-			domains = append(domains, proxy.HaloydDomain{
-				Canonical: domain.Canonical,
-				Aliases:   domain.Aliases,
-			})
-		}
-
-		var instances []proxy.HaloydInstance
-		for _, inst := range d.Instances {
-			instances = append(instances, proxy.HaloydInstance{
-				IP:   inst.IP,
-				Port: inst.Port,
-			})
-		}
-
-		haloydDeployments[appName] = proxy.HaloydDeployment{
-			AppName:   appName,
-			Domains:   domains,
-			Instances: instances,
-		}
-	}
-
-	for appName, d := range u.deploymentManager.FailedDeployments() {
-		if _, exists := haloydDeployments[appName]; exists {
-			continue
-		}
-
-		var domains []proxy.HaloydDomain
-		for _, domain := range d.Labels.Domains {
-			domains = append(domains, proxy.HaloydDomain{
-				Canonical: domain.Canonical,
-				Aliases:   domain.Aliases,
-			})
-		}
-
-		haloydDeployments[appName] = proxy.HaloydDeployment{
-			AppName:   appName,
-			Domains:   domains,
-			Instances: nil,
-		}
-	}
-
-	return proxy.BuildConfigFromHaloydDeployments(haloydDeployments, u.apiDomain)
 }
 
 // waitForACMERouting verifies that ACME challenge routing is ready.

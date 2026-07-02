@@ -1,29 +1,27 @@
 package proxy
 
 import (
+	"crypto/tls"
+	"io"
 	"log/slog"
-	"os"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
+	"time"
 )
 
-func TestFindRoute(t *testing.T) {
-	config := &Config{
-		Routes: map[string]*Route{
-			"example.com": {
-				Canonical: "example.com",
-				Aliases:   []string{"www.example.com", "alias.example.com"},
-				Backends:  []Backend{{IP: "10.0.0.1", Port: "8080"}},
-			},
-			"other.com": {
-				Canonical: "other.com",
-				Aliases:   nil,
-				Backends:  []Backend{{IP: "10.0.0.2", Port: "8080"}},
-			},
-		},
-	}
+func TestConfigFindRoute(t *testing.T) {
+	rb := NewRouteBuilder()
+	rb.AddRoute("example.com", []string{"www.example.com", "alias.example.com"}, []Backend{{IP: "10.0.0.1", Port: "8080"}})
+	rb.AddRoute("other.com", nil, []Backend{{IP: "10.0.0.2", Port: "8080"}})
 
-	p := &Proxy{}
+	config, err := rb.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
 
 	tests := []struct {
 		name      string
@@ -70,31 +68,27 @@ func TestFindRoute(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			route := p.findRoute(config, tt.host)
+			route := config.FindRoute(tt.host)
 
 			if tt.wantNil {
 				if route != nil {
-					t.Errorf("findRoute() = %v, want nil", route)
+					t.Errorf("FindRoute() = %v, want nil", route)
 				}
 				return
 			}
 
 			if route == nil {
-				t.Fatal("findRoute() = nil, want non-nil")
+				t.Fatal("FindRoute() = nil, want non-nil")
 			}
 
 			if route.Canonical != tt.wantCanon {
-				t.Errorf("findRoute().Canonical = %q, want %q", route.Canonical, tt.wantCanon)
+				t.Errorf("FindRoute().Canonical = %q, want %q", route.Canonical, tt.wantCanon)
 			}
 		})
 	}
 }
 
-func TestSelectBackend_SingleBackend(t *testing.T) {
-	p := &Proxy{
-		rrIndexes: make(map[string]uint32),
-	}
-
+func TestNextBackend_SingleBackend(t *testing.T) {
 	route := &Route{
 		Canonical: "example.com",
 		Backends:  []Backend{{IP: "10.0.0.1", Port: "8080"}},
@@ -102,18 +96,14 @@ func TestSelectBackend_SingleBackend(t *testing.T) {
 
 	// Call multiple times - should always return the same backend
 	for range 5 {
-		backend := p.selectBackend(route)
+		backend := route.nextBackend()
 		if backend.IP != "10.0.0.1" || backend.Port != "8080" {
-			t.Errorf("selectBackend() = %v, want {10.0.0.1 8080}", backend)
+			t.Errorf("nextBackend() = %v, want {10.0.0.1 8080}", backend)
 		}
 	}
 }
 
-func TestSelectBackend_RoundRobin(t *testing.T) {
-	p := &Proxy{
-		rrIndexes: make(map[string]uint32),
-	}
-
+func TestNextBackend_RoundRobin(t *testing.T) {
 	route := &Route{
 		Canonical: "example.com",
 		Backends: []Backend{
@@ -127,18 +117,14 @@ func TestSelectBackend_RoundRobin(t *testing.T) {
 	expected := []string{"10.0.0.1", "10.0.0.2", "10.0.0.3", "10.0.0.1", "10.0.0.2", "10.0.0.3"}
 
 	for i, expectedIP := range expected {
-		backend := p.selectBackend(route)
+		backend := route.nextBackend()
 		if backend.IP != expectedIP {
-			t.Errorf("selectBackend() call %d: got IP %s, want %s", i, backend.IP, expectedIP)
+			t.Errorf("nextBackend() call %d: got IP %s, want %s", i, backend.IP, expectedIP)
 		}
 	}
 }
 
-func TestSelectBackend_IndependentRoutes(t *testing.T) {
-	p := &Proxy{
-		rrIndexes: make(map[string]uint32),
-	}
-
+func TestNextBackend_IndependentRoutes(t *testing.T) {
 	route1 := &Route{
 		Canonical: "example1.com",
 		Backends: []Backend{
@@ -156,35 +142,31 @@ func TestSelectBackend_IndependentRoutes(t *testing.T) {
 	}
 
 	// First call to route1
-	b1 := p.selectBackend(route1)
+	b1 := route1.nextBackend()
 	if b1.IP != "10.0.0.1" {
 		t.Errorf("route1 first call: got %s, want 10.0.0.1", b1.IP)
 	}
 
 	// First call to route2 - should still start at index 0
-	b2 := p.selectBackend(route2)
+	b2 := route2.nextBackend()
 	if b2.IP != "10.0.1.1" {
 		t.Errorf("route2 first call: got %s, want 10.0.1.1", b2.IP)
 	}
 
 	// Second call to route1 - should continue its own sequence
-	b1 = p.selectBackend(route1)
+	b1 = route1.nextBackend()
 	if b1.IP != "10.0.0.2" {
 		t.Errorf("route1 second call: got %s, want 10.0.0.2", b1.IP)
 	}
 
 	// Second call to route2 - should continue its own sequence
-	b2 = p.selectBackend(route2)
+	b2 = route2.nextBackend()
 	if b2.IP != "10.0.1.2" {
 		t.Errorf("route2 second call: got %s, want 10.0.1.2", b2.IP)
 	}
 }
 
-func TestSelectBackend_Concurrent(t *testing.T) {
-	p := &Proxy{
-		rrIndexes: make(map[string]uint32),
-	}
-
+func TestNextBackend_Concurrent(t *testing.T) {
 	route := &Route{
 		Canonical: "example.com",
 		Backends: []Backend{
@@ -199,7 +181,7 @@ func TestSelectBackend_Concurrent(t *testing.T) {
 	// Spawn many goroutines to test concurrent access
 	for range 100 {
 		wg.Go(func() {
-			backend := p.selectBackend(route)
+			backend := route.nextBackend()
 			results <- backend.IP
 		})
 	}
@@ -273,7 +255,7 @@ func TestExtractHost(t *testing.T) {
 }
 
 func TestNew(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	p := New(logger, nil, nil)
 
 	if p == nil {
@@ -285,20 +267,34 @@ func TestNew(t *testing.T) {
 		t.Fatal("GetConfig() returned nil")
 	}
 
-	if config.Routes == nil {
-		t.Error("initial config.Routes is nil")
+	if config.RouteCount() != 0 {
+		t.Errorf("initial RouteCount() = %d, want 0", config.RouteCount())
 	}
 }
 
-func TestUpdateConfig(t *testing.T) {
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-	p := New(logger, nil, nil)
+type routeTableRecorder struct {
+	config *Config
+}
 
-	newConfig := &Config{
-		Routes: map[string]*Route{
-			"example.com": {Canonical: "example.com"},
-		},
-		APIDomain: "api.example.com",
+func (r *routeTableRecorder) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return nil, nil
+}
+
+func (r *routeTableRecorder) SetRouteTable(config *Config) {
+	r.config = config
+}
+
+func TestUpdateConfig(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	recorder := &routeTableRecorder{}
+	p := New(logger, recorder, nil)
+
+	rb := NewRouteBuilder()
+	rb.SetAPIDomain("api.example.com")
+	rb.AddRoute("example.com", nil, []Backend{{IP: "10.0.0.1", Port: "8080"}})
+	newConfig, err := rb.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
 	}
 
 	p.UpdateConfig(newConfig)
@@ -308,11 +304,135 @@ func TestUpdateConfig(t *testing.T) {
 		t.Error("GetConfig() did not return the updated config")
 	}
 
-	if len(got.Routes) != 1 {
-		t.Errorf("len(Routes) = %d, want 1", len(got.Routes))
+	if got.RouteCount() != 1 {
+		t.Errorf("RouteCount() = %d, want 1", got.RouteCount())
 	}
 
-	if got.APIDomain != "api.example.com" {
-		t.Errorf("APIDomain = %q, want %q", got.APIDomain, "api.example.com")
+	if got.APIDomain() != "api.example.com" {
+		t.Errorf("APIDomain() = %q, want %q", got.APIDomain(), "api.example.com")
+	}
+
+	// The route table must be forwarded to the cert loader.
+	if recorder.config != newConfig {
+		t.Error("UpdateConfig() did not forward the route table to the cert loader")
+	}
+}
+
+func TestHTTPHandler_LocalhostAPIRequiresLoopback(t *testing.T) {
+	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "api")
+	})
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	p := New(logger, nil, apiHandler)
+	handler := p.httpHandler()
+
+	// A remote client spoofing Host: localhost must not reach the API.
+	r := httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	r.RemoteAddr = "203.0.113.9:44321"
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusMovedPermanently {
+		t.Errorf("remote request with Host localhost: status = %d, want %d (redirect, not API)", w.Code, http.StatusMovedPermanently)
+	}
+
+	// A genuine loopback connection gets the API.
+	r = httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	r.RemoteAddr = "127.0.0.1:53422"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK || w.Body.String() != "api" {
+		t.Errorf("loopback request with Host localhost: status = %d body = %q, want API response", w.Code, w.Body.String())
+	}
+
+	// IPv6 loopback works too.
+	r = httptest.NewRequest(http.MethodGet, "http://localhost/", nil)
+	r.RemoteAddr = "[::1]:53423"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Errorf("IPv6 loopback request: status = %d, want %d", w.Code, http.StatusOK)
+	}
+}
+
+func TestProxyToBackend_DialFailover(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	liveURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	liveHost, livePort, err := net.SplitHostPort(liveURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Reserve a port and close it so dialing it fails.
+	deadListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadHost, deadPort, err := net.SplitHostPort(deadListener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadListener.Close()
+
+	p := newTestProxy()
+	route := &Route{
+		Canonical: "example.com",
+		Backends: []Backend{
+			{IP: deadHost, Port: deadPort},
+			{IP: liveHost, Port: livePort},
+		},
+	}
+
+	r := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
+	w := httptest.NewRecorder()
+	p.proxyToBackend(w, r, route, time.Now())
+
+	if w.Code != http.StatusOK || w.Body.String() != "ok" {
+		t.Errorf("status = %d body = %q, want request to fail over to the live backend", w.Code, w.Body.String())
+	}
+}
+
+type stubCertLoader struct{}
+
+func (stubCertLoader) GetCertificate(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+	return nil, nil
+}
+
+func TestStart_BindErrorIsReturned(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	p := New(slog.New(slog.NewTextHandler(io.Discard, nil)), stubCertLoader{}, nil)
+	if err := p.Start(occupied.Addr().String(), "127.0.0.1:0"); err == nil {
+		p.Shutdown(t.Context())
+		t.Fatal("Start() on an occupied port should return an error")
+	}
+}
+
+func TestStartAndShutdown(t *testing.T) {
+	p := New(slog.New(slog.NewTextHandler(io.Discard, nil)), stubCertLoader{}, nil)
+	if err := p.Start("127.0.0.1:0", "127.0.0.1:0"); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	select {
+	case err := <-p.Err():
+		t.Fatalf("unexpected fatal listener error: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := p.Shutdown(t.Context()); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
 	}
 }

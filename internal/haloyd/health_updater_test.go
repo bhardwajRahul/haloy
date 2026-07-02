@@ -52,7 +52,7 @@ func TestHealthUpdaterKeepsRoutesWithoutHealthyBackends(t *testing.T) {
 		t.Fatal("expected proxy config to be set")
 	}
 
-	route := config.Routes["app.example.com"]
+	route := config.FindRoute("app.example.com")
 	if route == nil {
 		t.Fatal("expected route to remain when backends unhealthy")
 	}
@@ -104,7 +104,7 @@ func TestHealthUpdaterKeepsRouteAfterDeploymentRemoved(t *testing.T) {
 		t.Fatal("expected proxy config to be set")
 	}
 
-	route := cfg.Routes["app.example.com"]
+	route := cfg.FindRoute("app.example.com")
 	if route == nil {
 		t.Fatal("expected route to remain for failed deployment")
 	}

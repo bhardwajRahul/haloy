@@ -40,66 +40,27 @@ func (u *HealthConfigUpdater) OnHealthChange(healthyTargets []healthcheck.Target
 		healthyIDs[t.ID] = struct{}{}
 	}
 
-	// Get all deployments from the deployment manager
 	deployments := u.deploymentManager.Deployments()
 
-	// Build proxy config with only healthy instances
-	haloydDeployments := make(map[string]proxy.HaloydDeployment)
-
 	for appName, d := range deployments {
-		var domains []proxy.HaloydDomain
-		for _, domain := range d.Labels.Domains {
-			domains = append(domains, proxy.HaloydDomain{
-				Canonical: domain.Canonical,
-				Aliases:   domain.Aliases,
-			})
-		}
-
-		// Filter to only healthy instances
-		var healthyInstances []proxy.HaloydInstance
+		healthyCount := 0
 		for _, inst := range d.Instances {
 			if _, isHealthy := healthyIDs[inst.ContainerID]; isHealthy {
-				healthyInstances = append(healthyInstances, proxy.HaloydInstance{
-					IP:   inst.IP,
-					Port: inst.Port,
-				})
+				healthyCount++
 			}
 		}
-
-		if len(healthyInstances) == 0 {
+		if healthyCount == 0 {
 			u.logger.Warn("App has no healthy backends",
 				"app", appName,
 				"total_instances", len(d.Instances))
 		}
-
-		haloydDeployments[appName] = proxy.HaloydDeployment{
-			AppName:   appName,
-			Domains:   domains,
-			Instances: healthyInstances,
-		}
 	}
 
-	for appName, d := range u.deploymentManager.FailedDeployments() {
-		if _, exists := haloydDeployments[appName]; exists {
-			continue
-		}
-
-		var domains []proxy.HaloydDomain
-		for _, domain := range d.Labels.Domains {
-			domains = append(domains, proxy.HaloydDomain{
-				Canonical: domain.Canonical,
-				Aliases:   domain.Aliases,
-			})
-		}
-
-		haloydDeployments[appName] = proxy.HaloydDeployment{
-			AppName:   appName,
-			Domains:   domains,
-			Instances: nil,
-		}
-	}
-
-	proxyConfig, err := proxy.BuildConfigFromHaloydDeployments(haloydDeployments, u.apiDomain)
+	proxyConfig, err := buildProxyConfig(deployments, u.deploymentManager.FailedDeployments(), u.apiDomain,
+		func(inst DeploymentInstance) bool {
+			_, isHealthy := healthyIDs[inst.ContainerID]
+			return isHealthy
+		})
 	if err != nil {
 		u.logger.Error("Failed to build proxy config from health check", "error", err)
 		return
@@ -107,6 +68,6 @@ func (u *HealthConfigUpdater) OnHealthChange(healthyTargets []healthcheck.Target
 
 	u.proxy.UpdateConfig(proxyConfig)
 	u.logger.Info("Proxy configuration updated from health monitor",
-		"healthy_apps", len(haloydDeployments),
+		"apps", len(deployments),
 		"healthy_targets", len(healthyTargets))
 }

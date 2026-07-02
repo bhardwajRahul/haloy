@@ -45,7 +45,7 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, route *R
 		return
 	}
 
-	backend := p.selectBackend(route)
+	backend := route.nextBackend()
 	backendAddr := net.JoinHostPort(backend.IP, backend.Port)
 
 	backendConn, err := net.DialTimeout("tcp", backendAddr, 10*time.Second)
@@ -75,6 +75,13 @@ func (p *Proxy) handleWebSocket(w http.ResponseWriter, r *http.Request, route *R
 		return
 	}
 	defer clientConn.Close()
+
+	// Register the tunnel so Shutdown can drain it; hijacked connections are
+	// invisible to http.Server.Shutdown.
+	if !p.trackWebSocket(clientConn, backendConn) {
+		return
+	}
+	defer p.untrackWebSocket(clientConn, backendConn)
 
 	setForwardedHeaders(r)
 
