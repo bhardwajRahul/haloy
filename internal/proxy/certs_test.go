@@ -137,6 +137,42 @@ func TestCertManagerSkipsDiskForUnknownDomains(t *testing.T) {
 	}
 }
 
+func TestCertManagerDoesNotServePreloadedUnknownCertificate(t *testing.T) {
+	dir := t.TempDir()
+	writeTestCert(t, dir, "routed.example.com")
+	writeTestCert(t, dir, "stale.example.com")
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	cm, err := NewCertManager(dir, logger)
+	if err != nil {
+		t.Fatalf("NewCertManager() error = %v", err)
+	}
+
+	rb := NewRouteBuilder()
+	rb.AddRoute("routed.example.com", nil, nil)
+	config, err := rb.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	cm.SetRouteTable(config)
+
+	cert, err := cm.GetCertificate(&tls.ClientHelloInfo{ServerName: "stale.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate() error = %v", err)
+	}
+	if cert != cm.defaultCert {
+		t.Error("GetCertificate() for preloaded unknown domain returned a cached cert, want default cert")
+	}
+
+	cert, err = cm.GetCertificate(&tls.ClientHelloInfo{ServerName: "routed.example.com"})
+	if err != nil {
+		t.Fatalf("GetCertificate() error = %v", err)
+	}
+	if cert == cm.defaultCert {
+		t.Error("GetCertificate() for routed domain returned default cert, want cached cert")
+	}
+}
+
 func TestCertManagerWildcardMatch(t *testing.T) {
 	dir := t.TempDir()
 	writeTestCert(t, dir, "*.example.com")

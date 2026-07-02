@@ -162,6 +162,12 @@ func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 		return cm.defaultCert, nil
 	}
 
+	routes := cm.routes.Load()
+	known := routes == nil || routes.IsKnownHost(serverName)
+	if !known {
+		return cm.defaultCert, nil
+	}
+
 	if cert, ok := cm.getCachedCertificate(serverName); ok {
 		return cert, nil
 	}
@@ -169,13 +175,8 @@ func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 	// Only touch disk for domains we actually route, so scanner traffic with
 	// random SNI values stays away from the filesystem. A nil route table
 	// (not set yet) is treated as permissive.
-	routes := cm.routes.Load()
-	known := routes == nil || routes.IsKnownHost(serverName)
-
-	if known {
-		if cert, err := cm.loadAndCacheCertificate(serverName); err == nil {
-			return cert, nil
-		}
+	if cert, err := cm.loadAndCacheCertificate(serverName); err == nil {
+		return cert, nil
 	}
 
 	// Aliases are covered by their canonical domain's certificate.
@@ -190,14 +191,12 @@ func (cm *CertManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certific
 		}
 	}
 
-	if known {
-		if wildcard := wildcardDomain(serverName); wildcard != "" {
-			if cert, ok := cm.getCachedCertificate(wildcard); ok {
-				return cert, nil
-			}
-			if cert, err := cm.loadAndCacheCertificate(wildcard); err == nil {
-				return cert, nil
-			}
+	if wildcard := wildcardDomain(serverName); wildcard != "" {
+		if cert, ok := cm.getCachedCertificate(wildcard); ok {
+			return cert, nil
+		}
+		if cert, err := cm.loadAndCacheCertificate(wildcard); err == nil {
+			return cert, nil
 		}
 	}
 

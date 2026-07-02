@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/haloydev/haloy/internal/config"
 	"github.com/haloydev/haloy/internal/constants"
@@ -14,6 +15,8 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 )
+
+const certPEMExt = ".pem"
 
 // restartCommand returns the appropriate command to restart haloyd based on the init system
 func restartCommand() string {
@@ -120,33 +123,32 @@ Note: After changing configuration, restart haloyd for changes to take effect.`,
 				return fmt.Errorf("failed to get config directory: %w", err)
 			}
 
-			configPath := filepath.Join(configDir, constants.HaloydConfigFileName)
-			haloydConfig, err := config.LoadHaloydConfig(configPath)
+			haloydConfig, err := loadHaloydConfig(configDir)
 			if err != nil {
-				// Create new config if it doesn't exist
-				haloydConfig = &config.HaloydConfig{}
+				return err
 			}
 
+			var postSaveErr error
 			switch key {
 			case "api-domain":
+				oldDomain := haloydConfig.API.Domain
+				value = strings.ToLower(value)
 				haloydConfig.API.Domain = value
+
+				if err := saveHaloydConfig(configDir, haloydConfig); err != nil {
+					return err
+				}
+
 				ui.Info("API domain set to: %s", value)
+				postSaveErr = cleanupOldAPIDomainCertificate(oldDomain, value)
 
 			default:
 				return fmt.Errorf("unknown config key: %s", key)
 			}
 
-			if err := haloydConfig.Validate(); err != nil {
-				return fmt.Errorf("invalid configuration: %w", err)
-			}
-
-			if err := config.SaveHaloydConfig(haloydConfig, configPath); err != nil {
-				return fmt.Errorf("failed to save config: %w", err)
-			}
-
 			ui.Info("Restart haloyd for changes to take effect: %s", restartCommand())
 
-			return nil
+			return postSaveErr
 		},
 	}
 
@@ -219,10 +221,58 @@ func loadHaloydConfig(configDir string) (*config.HaloydConfig, error) {
 	configPath := filepath.Join(configDir, constants.HaloydConfigFileName)
 	haloydConfig, err := config.LoadHaloydConfig(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return &config.HaloydConfig{}, nil
-		}
 		return nil, fmt.Errorf("failed to load config: %w", err)
 	}
+	if haloydConfig == nil {
+		return &config.HaloydConfig{}, nil
+	}
 	return haloydConfig, nil
+}
+
+func saveHaloydConfig(configDir string, haloydConfig *config.HaloydConfig) error {
+	if err := haloydConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid configuration: %w", err)
+	}
+
+	configPath := filepath.Join(configDir, constants.HaloydConfigFileName)
+	if err := config.SaveHaloydConfig(haloydConfig, configPath); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	return nil
+}
+
+func cleanupOldAPIDomainCertificate(oldDomain, newDomain string) error {
+	oldDomainNormalized := strings.ToLower(oldDomain)
+	newDomainNormalized := strings.ToLower(newDomain)
+	if oldDomainNormalized == "" {
+		return nil
+	}
+
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return fmt.Errorf("API domain updated, but failed to determine data directory for old certificate cleanup: %w", err)
+	}
+
+	certDir := filepath.Join(dataDir, constants.CertStorageDir)
+	certNames := make(map[string]struct{})
+	if oldDomainNormalized != newDomainNormalized {
+		certNames[oldDomainNormalized] = struct{}{}
+	}
+	if oldDomain != oldDomainNormalized {
+		certNames[oldDomain] = struct{}{}
+	}
+
+	for certName := range certNames {
+		certPath := filepath.Join(certDir, certName+certPEMExt)
+		if err := os.Remove(certPath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("API domain updated, but failed to remove old API domain certificate %s: %w", certPath, err)
+		}
+		ui.Info("Removed old API domain certificate: %s", certPath)
+	}
+
+	return nil
 }
