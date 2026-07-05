@@ -3,6 +3,7 @@ package haloyd
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/haloydev/haloy/internal/healthcheck"
 )
@@ -62,7 +63,10 @@ func (u *HealthConfigUpdater) OnHealthChange(healthyTargets []healthcheck.Target
 			return isHealthy
 		})
 
-	if err := u.proxyPusher.Push(context.Background(), snapshot); err != nil {
+	pushCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := u.proxyPusher.Push(pushCtx, snapshot); err != nil {
 		u.logger.Error("Failed to push proxy config from health check", "error", err)
 		return
 	}
