@@ -236,7 +236,9 @@ func Run(debug bool) {
 				}
 
 				if err := app.Validate(); err != nil {
-					deploymentLogger.Error("App data not valid", "error", err)
+					// Signal failure so a CLI streaming this deployment stops waiting.
+					logging.LogDeploymentFailed(deploymentLogger, de.DeploymentID, de.AppName,
+						"Deployment failed", fmt.Errorf("app data not valid: %w", err))
 					return
 				}
 
