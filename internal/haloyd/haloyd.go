@@ -3,7 +3,6 @@ package haloyd
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -13,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
@@ -33,13 +31,13 @@ const (
 	maintenanceInterval  = 12 * time.Hour   // Interval for periodic maintenance tasks
 	eventDebounceDelay   = 5 * time.Second  // Delay for debouncing container events
 	eventDebounceMaxWait = 30 * time.Second // Max debounce postponement while events keep arriving
+	eventsReconnectDelay = 5 * time.Second  // Delay before re-subscribing to Docker events after a stream error
 	updateTimeout        = 15 * time.Minute // Max time for a single update operation
 )
 
 type ContainerEvent struct {
-	Event     events.Message
-	Container container.InspectResponse
-	Labels    *config.ContainerLabels
+	Event  events.Message
+	Labels *config.ContainerLabels
 }
 
 func Run(debug bool) {
@@ -171,7 +169,10 @@ func Run(debug bool) {
 	// during long-running health check retries. Buffer allows events to queue.
 	eventsChan := make(chan ContainerEvent, 100)
 	errorsChan := make(chan error)
-	go listenForDockerEvents(ctx, cli, eventsChan, errorsChan, logger)
+	// Signals that the event stream was interrupted and re-established, so
+	// events may have been missed and a full resync is needed.
+	resyncChan := make(chan struct{}, 1)
+	go listenForDockerEvents(ctx, cli, eventsChan, errorsChan, resyncChan, logger)
 
 	debouncedEventsChan := make(chan debouncedAppEvent)
 
@@ -324,6 +325,17 @@ func Run(debug bool) {
 			}
 			cancelReload()
 
+		case <-resyncChan:
+			logger.Info("Docker event stream re-established, resyncing deployments")
+			go func() {
+				resyncCtx, cancelResync := context.WithTimeout(ctx, updateTimeout)
+				defer cancelResync()
+
+				if _, err := updater.Update(resyncCtx, logger, TriggerPeriodicRefresh, nil); err != nil {
+					logger.Error("Resync update failed", "error", err)
+				}
+			}()
+
 		case <-maintenanceTicker.C:
 			logger.Info("Performing periodic maintenance...")
 			_, err := docker.PruneImages(ctx, cli, logger)
@@ -361,10 +373,14 @@ func Run(debug bool) {
 	}
 }
 
-// listenForDockerEvents sets up a listener for Docker events
-func listenForDockerEvents(ctx context.Context, cli *client.Client, eventsChan chan ContainerEvent, errorsChan chan error, logger *slog.Logger) {
+// listenForDockerEvents sets up a listener for Docker events. It keeps
+// re-subscribing until ctx is cancelled: after any stream error the Docker
+// client closes the stream, and haloyd must never run without an event source.
+func listenForDockerEvents(ctx context.Context, cli *client.Client, eventsChan chan ContainerEvent, errorsChan chan error, resyncChan chan struct{}, logger *slog.Logger) {
 	filterArgs := filters.NewArgs()
 	filterArgs.Add("type", "container")
+	// Only receive events for containers managed by haloy.
+	filterArgs.Add("label", config.LabelAppName)
 
 	// Define allowed actions for event processing
 	allowedActions := map[string]struct{}{
@@ -379,59 +395,84 @@ func listenForDockerEvents(ctx context.Context, cli *client.Client, eventsChan c
 		Filters: filterArgs,
 	}
 
-	events, errs := cli.Events(ctx, eventOptions)
+	eventStream, errs := cli.Events(ctx, eventOptions)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case event := <-events:
-			if _, ok := allowedActions[string(event.Action)]; ok {
-				container, err := cli.ContainerInspect(ctx, event.Actor.ID)
-				if err != nil {
-					logger.Error("Error inspecting container",
-						"containerID", helpers.SafeIDPrefix(event.Actor.ID),
-						"error", err)
-					continue
-				}
+		case event := <-eventStream:
+			if _, ok := allowedActions[string(event.Action)]; !ok {
+				continue
+			}
 
-				// We'll only process events for containers that have been marked with haloy app label.
-				isHaloyApp := container.Config.Labels[config.LabelAppName] != ""
-				if isHaloyApp {
-					labels, err := config.ParseContainerLabels(container.Config.Labels)
-					if err != nil {
-						logger.Error("Error parsing container labels", "error", err)
-						continue
-					}
+			labels := labelsForEvent(ctx, cli, event, logger)
+			if labels == nil {
+				continue
+			}
 
-					logger.Debug("Container is eligible",
-						"event", string(event.Action),
-						"containerID", helpers.SafeIDPrefix(event.Actor.ID),
-						"deploymentID", labels.DeploymentID)
+			logger.Debug("Container is eligible",
+				"event", string(event.Action),
+				"containerID", helpers.SafeIDPrefix(event.Actor.ID),
+				"deploymentID", labels.DeploymentID)
 
-					containerEvent := ContainerEvent{
-						Event:     event,
-						Container: container,
-						Labels:    labels,
-					}
-					eventsChan <- containerEvent
-				} else {
-					logger.Debug("Container not eligible for haloy management",
-						"containerID", helpers.SafeIDPrefix(event.Actor.ID))
-				}
+			eventsChan <- ContainerEvent{
+				Event:  event,
+				Labels: labels,
 			}
 		case err := <-errs:
+			if ctx.Err() != nil {
+				return
+			}
 			if err != nil {
 				errorsChan <- err
-				if err == io.EOF || strings.Contains(err.Error(), "connection refused") {
-					time.Sleep(5 * time.Second)
-					events, errs = cli.Events(ctx, eventOptions)
-					continue
-				}
 			}
-			return
+			// The stream is closed after any error (a nil error means the
+			// channel itself was closed). Wait a bit and re-subscribe.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(eventsReconnectDelay):
+			}
+			eventStream, errs = cli.Events(ctx, eventOptions)
+
+			// Events during the gap are lost; ask the main loop to resync.
+			select {
+			case resyncChan <- struct{}{}:
+			default:
+			}
 		}
 	}
+}
+
+// labelsForEvent resolves the haloy labels for a container event. It prefers a
+// fresh inspect, but falls back to the labels embedded in the event itself when
+// the container is already gone (e.g. autoremove after die), so those events
+// are not lost.
+func labelsForEvent(ctx context.Context, cli *client.Client, event events.Message, logger *slog.Logger) *config.ContainerLabels {
+	labelSource := event.Actor.Attributes
+	if container, err := cli.ContainerInspect(ctx, event.Actor.ID); err == nil {
+		labelSource = container.Config.Labels
+	} else {
+		logger.Debug("Could not inspect container for event, using event labels",
+			"containerID", helpers.SafeIDPrefix(event.Actor.ID),
+			"error", err)
+	}
+
+	if labelSource[config.LabelAppName] == "" {
+		logger.Debug("Container not eligible for haloy management",
+			"containerID", helpers.SafeIDPrefix(event.Actor.ID))
+		return nil
+	}
+
+	labels, err := config.ParseContainerLabels(labelSource)
+	if err != nil {
+		logger.Error("Error parsing container labels",
+			"containerID", helpers.SafeIDPrefix(event.Actor.ID),
+			"error", err)
+		return nil
+	}
+	return labels
 }
 
 // logContainerFailureLogs extracts and logs container output from failed containers.
