@@ -65,31 +65,26 @@ func Run(debug bool) {
 
 	db, err := storage.New()
 	if err != nil {
-		logger.Error("Failed to initialize database", "error", err)
-		return
+		logging.LogFatal(logger, "Failed to initialize database", "error", err)
 	}
 	defer db.Close()
 	if err := db.Migrate(); err != nil {
-		logger.Error("Failed to run database migrations", "error", err)
-		return
+		logging.LogFatal(logger, "Failed to run database migrations", "error", err)
 	}
 	logger.Info("Database initialized successfully")
 
 	dataDir, err := config.DataDir()
 	if err != nil {
-		logger.Error("Failed to get data directory", "error", err)
-		return
+		logging.LogFatal(logger, "Failed to get data directory", "error", err)
 	}
 	configDir, err := config.HaloydConfigDir()
 	if err != nil {
-		logger.Error("Failed to get haloyd config directory", "error", err)
-		return
+		logging.LogFatal(logger, "Failed to get haloyd config directory", "error", err)
 	}
 	configFilePath := filepath.Join(configDir, constants.HaloydConfigFileName)
 	haloydConfig, err := config.LoadHaloydConfig(configFilePath)
 	if err != nil {
-		logger.Error("Failed to load configuration file", "error", err)
-		return
+		logging.LogFatal(logger, "Failed to load configuration file", "error", err)
 	}
 
 	cli, err := docker.NewClient(ctx)
