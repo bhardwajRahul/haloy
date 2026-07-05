@@ -61,7 +61,6 @@ type DeploymentManager struct {
 	// failedDeployments tracks apps that were previously deployed but lost all healthy containers.
 	// This allows the proxy to keep routes for these apps (returning 502 instead of 404).
 	failedDeployments map[string]Deployment
-	compareResult     compareResult
 	deploymentsMutex  sync.RWMutex
 	haloydConfig      *config.HaloydConfig
 }
@@ -235,7 +234,6 @@ func (dm *DeploymentManager) UpdateDeployments(healthy []HealthyContainer) (hasC
 	failedDeploymentsChanged := dm.updateFailedDeployments(compareResult, newDeployments)
 
 	hasChanged = deploymentsChanged || failedDeploymentsChanged
-	dm.compareResult = compareResult
 	return hasChanged
 }
 
