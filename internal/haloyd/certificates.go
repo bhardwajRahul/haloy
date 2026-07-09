@@ -471,13 +471,12 @@ func (m *CertificatesManager) Stop() {
 
 func (cm *CertificatesManager) RefreshSync(logger *slog.Logger, domains []CertificatesDomain) error {
 	renewedDomains, err := cm.checkRenewals(logger, domains)
-	if err != nil {
-		return err
-	}
+	// Signal even on partial failure so the proxy reloads the certificates
+	// that were renewed before the error.
 	if len(renewedDomains) > 0 && cm.updateSignal != nil {
 		cm.updateSignal <- "certificates_renewed"
 	}
-	return nil
+	return err
 }
 
 // Refresh is used for periodic refreshes of certificates.
@@ -488,9 +487,9 @@ func (cm *CertificatesManager) Refresh(logger *slog.Logger, domains []Certificat
 		renewedDomains, err := cm.checkRenewals(logger, domains)
 		if err != nil {
 			logger.Error("Certificate refresh failed", "error", err)
-			return
 		}
-		// Signal the update channel to reload certificates if any were renewed.
+		// Signal the update channel to reload certificates if any were renewed,
+		// even on partial failure.
 		if len(renewedDomains) > 0 {
 			if cm.updateSignal != nil {
 				cm.updateSignal <- "certificates_renewed"
@@ -538,6 +537,7 @@ func (cm *CertificatesManager) checkRenewals(logger *slog.Logger, domains []Cert
 		}
 	}
 
+	var errs []error
 	for canonical, domain := range currentState {
 		configChanged, err := cm.hasConfigurationChanged(logger, domain)
 		if err != nil {
@@ -553,16 +553,9 @@ func (cm *CertificatesManager) checkRenewals(logger *slog.Logger, domains []Cert
 			needsRenewal = true
 		}
 
-		// If configuration changed, clean up all related certificates first
-		if configChanged {
-			logger.Debug("Configuration changed, cleaning up existing certificates", "domain", canonical)
-			if err := cm.cleanupDomainCertificates(canonical); err != nil {
-				logger.Warn("Failed to cleanup certificates", "domain", canonical, "error", err)
-				// Continue anyway, might still work
-			}
-		}
-
-		// Obtain certificate if needed
+		// Obtain certificate if needed. Any existing certificate is kept on
+		// disk until saveCertificate atomically replaces it, so a failed
+		// obtain never leaves a domain without its previous certificate.
 		allDomains := []string{domain.Canonical}
 		allDomains = append(allDomains, domain.Aliases...)
 		if configChanged || needsRenewal {
@@ -576,7 +569,11 @@ func (cm *CertificatesManager) checkRenewals(logger *slog.Logger, domains []Cert
 				"aliases", domain.Aliases)
 			obtainedDomain, err := cm.obtainCertificate(logger, domain)
 			if err != nil {
-				return renewedDomains, err
+				// Continue with the remaining domains; one misconfigured
+				// domain must not block renewals for the others.
+				logger.Error("Failed to obtain certificate", "domain", canonical, "error", err)
+				errs = append(errs, err)
+				continue
 			}
 
 			renewedDomains = append(renewedDomains, obtainedDomain)
@@ -591,7 +588,7 @@ func (cm *CertificatesManager) checkRenewals(logger *slog.Logger, domains []Cert
 		}
 	}
 
-	return renewedDomains, nil
+	return renewedDomains, errors.Join(errs...)
 }
 
 // hasConfigurationChanged checks if the domain configuration has changed compared to existing certificate
@@ -663,16 +660,6 @@ func (cm *CertificatesManager) needsRenewalDueToExpiry(logger *slog.Logger, doma
 	}
 
 	return false, nil
-}
-
-// cleanupDomainCertificates removes all certificate files for a domain
-func (cm *CertificatesManager) cleanupDomainCertificates(canonical string) error {
-	combinedPath := filepath.Join(cm.config.CertDir, canonical+combinedCertExt)
-	if err := os.Remove(combinedPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to remove combined certificate file %s: %w", combinedPath, err)
-	}
-
-	return nil
 }
 
 func (cm *CertificatesManager) validateDomain(logger *slog.Logger, domain string) error {

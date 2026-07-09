@@ -129,10 +129,22 @@ func (u *Updater) Update(ctx context.Context, logger *slog.Logger, reason Trigge
 	// Step 3: Update deployments map from healthy containers
 	deploymentsHasChanged := u.deploymentManager.UpdateDeployments(healthy)
 
-	// Skip further processing if no changes were detected and the reason is not an initial update.
+	// Certificate maintenance must run even when deployments are unchanged:
+	// renewals come due by expiry alone, and a failed obtain (e.g. DNS not
+	// ready yet after a domain change) is retried on later refreshes.
+	certDomains, err := u.deploymentManager.GetCertificateDomains()
+	if err != nil {
+		return result, fmt.Errorf("failed to get certificate domains: %w", err)
+	}
+
+	// Skip proxy and container work if no changes were detected and the reason is not an initial update.
 	// We'll still want to continue on the initial update to ensure the API domain is set up correctly.
 	if !deploymentsHasChanged && reason != TriggerReasonInitial {
-		logger.Debug("Updater: No changes detected in deployments, skipping further processing")
+		logger.Debug("Updater: No changes detected in deployments, running certificate maintenance only")
+		u.certManager.Refresh(logger, certDomains)
+		if reason == TriggerPeriodicRefresh {
+			u.certManager.CleanupExpiredCertificates(logger, certDomains)
+		}
 		return result, nil
 	}
 
@@ -151,37 +163,24 @@ func (u *Updater) Update(ctx context.Context, logger *slog.Logger, reason Trigge
 	}
 
 	deployments := u.deploymentManager.Deployments()
-	proxyConfigUpdated := false
-	updateProxyConfig := func() error {
-		snapshot := buildSnapshot(deployments, u.deploymentManager.FailedDeployments(), u.apiDomain, nil)
-		if err := u.proxyPusher.Push(ctx, snapshot); err != nil {
-			if !errors.Is(err, proxyclient.ErrUnreachable) {
-				return fmt.Errorf("failed to push proxy config: %w", err)
-			}
-			// The snapshot is durably recorded; the proxy client's reconcile
-			// loop delivers it once the proxy is reachable again, so an
-			// unreachable proxy must not fail a deployment.
-			logger.Warn("Proxy unreachable during config push; config will be delivered when it is back", "error", err)
-		}
-		proxyConfigUpdated = true
-		return nil
-	}
 
-	// On startup, make discovered healthy containers routable before synchronous
-	// certificate renewal. Existing certificates can still serve traffic, and a
-	// transient ACME failure should not leave the proxy with an empty route table.
-	if reason == TriggerReasonInitial {
-		if err := updateProxyConfig(); err != nil {
-			return result, err
+	// Make discovered healthy containers routable before synchronous
+	// certificate renewal. Existing certificates can still serve traffic, ACME
+	// challenges are forwarded to haloyd regardless of the route table, and a
+	// transient ACME failure should not leave the proxy config stale or the
+	// route table empty on startup.
+	snapshot := buildSnapshot(deployments, u.deploymentManager.FailedDeployments(), u.apiDomain, nil)
+	if err := u.proxyPusher.Push(ctx, snapshot); err != nil {
+		if !errors.Is(err, proxyclient.ErrUnreachable) {
+			return result, fmt.Errorf("failed to push proxy config: %w", err)
 		}
+		// The snapshot is durably recorded; the proxy client's reconcile
+		// loop delivers it once the proxy is reachable again, so an
+		// unreachable proxy must not fail a deployment.
+		logger.Warn("Proxy unreachable during config push; config will be delivered when it is back", "error", err)
 	}
 
 	// Certificates refresh logic based on trigger reason.
-	certDomains, err := u.deploymentManager.GetCertificateDomains()
-	if err != nil {
-		return result, fmt.Errorf("failed to get certificate domains: %w", err)
-	}
-
 	// If an app is provided we refresh the certs synchronously so we can log the result.
 	// Otherwise, we refresh them asynchronously to avoid blocking the main update process.
 	// We also refresh the certs for that app only.
@@ -211,13 +210,6 @@ func (u *Updater) Update(ctx context.Context, logger *slog.Logger, reason Trigge
 
 	if reason == TriggerPeriodicRefresh {
 		u.certManager.CleanupExpiredCertificates(logger, certDomains)
-	}
-
-	// Update proxy configuration
-	if !proxyConfigUpdated {
-		if err := updateProxyConfig(); err != nil {
-			return result, err
-		}
 	}
 
 	// If an app is provided:
