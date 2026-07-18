@@ -21,6 +21,8 @@ func LogsCmd(configPath *string, flags *appCmdFlags) *cobra.Command {
 		allContainers bool
 		containerID   string
 		tail          int
+		noFollow      bool
+		raw           bool
 	)
 
 	cmd := &cobra.Command{
@@ -47,7 +49,13 @@ Examples:
   haloy logs --container abc123
 
   # Stream from specific targets (multi-target config)
-  haloy logs --targets prod`,
+  haloy logs --targets prod
+
+  # Print existing logs and exit without following
+  haloy logs --no-follow
+
+  # Raw logs, no container names, no extra formatting
+  haloy logs --raw`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			ctx := cmd.Context()
@@ -78,7 +86,7 @@ Examples:
 					if len(targets) > 1 {
 						prefix = target.TargetName
 					}
-					return streamAppLogs(ctx, &target, target.Server, target.Name, tail, containerID, allContainers, prefix)
+					return streamAppLogs(ctx, &target, target.Server, target.Name, tail, containerID, allContainers, !noFollow, raw, prefix)
 				})
 			}
 
@@ -92,13 +100,15 @@ Examples:
 	cmd.Flags().IntVar(&tail, "tail", 100, "Number of historical log lines to show")
 	cmd.Flags().StringVar(&containerID, "container", "", "Stream logs from a specific container ID")
 	cmd.Flags().BoolVar(&allContainers, "all-containers", false, "Stream logs from all containers")
+	cmd.Flags().BoolVar(&noFollow, "no-follow", false, "Print existing logs and exit without following")
+	cmd.Flags().BoolVar(&raw, "raw", false, "Raw logs with no extra formatting")
 
 	cmd.RegisterFlagCompletionFunc("targets", completeTargetNames)
 
 	return cmd
 }
 
-func streamAppLogs(ctx context.Context, targetConfig *config.TargetConfig, targetServer, appName string, tail int, containerID string, allContainers bool, prefix string) error {
+func streamAppLogs(ctx context.Context, targetConfig *config.TargetConfig, targetServer, appName string, tail int, containerID string, allContainers, follow bool, raw bool, prefix string) error {
 	pui := &ui.PrefixedUI{Prefix: prefix}
 
 	token, err := getToken(targetConfig, targetServer)
@@ -111,7 +121,9 @@ func streamAppLogs(ctx context.Context, targetConfig *config.TargetConfig, targe
 		return &PrefixedError{Err: fmt.Errorf("failed to create API client: %w", err), Prefix: prefix}
 	}
 
-	pui.Info("Streaming container logs... (Press Ctrl+C to stop)")
+	if follow && !raw {
+		pui.Info("Streaming container logs... (Press Ctrl+C to stop)")
+	}
 
 	params := url.Values{}
 	params.Set("tail", strconv.Itoa(tail))
@@ -121,10 +133,13 @@ func streamAppLogs(ctx context.Context, targetConfig *config.TargetConfig, targe
 	if allContainers {
 		params.Set("allContainers", "true")
 	}
+	if !follow {
+		params.Set("follow", "false")
+	}
 
 	path := fmt.Sprintf("logs/%s?%s", appName, params.Encode())
 
-	showContainerID := allContainers
+	showContainerID := allContainers && !raw
 
 	streamHandler := func(data string) bool {
 		var logLine docker.LogLine
@@ -142,7 +157,7 @@ func streamAppLogs(ctx context.Context, targetConfig *config.TargetConfig, targe
 			line = fmt.Sprintf("[%s] %s", shortID, logLine.Line)
 		}
 
-		if prefix != "" {
+		if prefix != "" && !raw {
 			pui.Info("%s", line)
 		} else {
 			fmt.Println(line)
