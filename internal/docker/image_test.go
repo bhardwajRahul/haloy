@@ -257,6 +257,21 @@ func TestFormatImagePullError(t *testing.T) {
 			},
 		},
 		{
+			name:     "disk full during pull",
+			imageRef: "ghcr.io/example/app:1",
+			image:    config.Image{Repository: "ghcr.io/example/app", Tag: "1"},
+			err:      errors.New("failed to register layer: write /var/lib/docker/overlay2/layer: no space left on device"),
+			wantContains: []string{
+				"failed to pull ghcr.io/example/app:1",
+				"out of disk space",
+				"haloy prune-images",
+				"image.history.count",
+			},
+			wantNotContains: []string{
+				"if you intended to build this image locally",
+			},
+		},
+		{
 			name:     "shorthand ordinary pull error keeps build hint",
 			imageRef: "myapp:latest",
 			image:    config.Image{Repository: "myapp"},

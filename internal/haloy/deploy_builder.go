@@ -106,7 +106,7 @@ func BuildImage(ctx context.Context, imageRef string, image *config.Image, confi
 	args = append(args, paths.ContextDir)
 
 	if err := runCLICommandInDir(ctx, workDir, "docker", args...); err != nil {
-		return fmt.Errorf("failed to build image %s: %w", imageRef, err)
+		return withLocalDockerDiskFullHint(fmt.Errorf("failed to build image %s: %w", imageRef, err))
 	}
 
 	ui.Success("Built image %s", imageRef)
@@ -138,7 +138,7 @@ func UploadImage(ctx context.Context, imageRef string, resolvedTargetConfigs []*
 	defer os.Remove(tempPath)
 
 	if err := saveImageTar(ctx, imageRef, tempPath); err != nil {
-		return fmt.Errorf("failed to save image to tar: %w", err)
+		return withLocalDockerDiskFullHint(fmt.Errorf("failed to save image to tar: %w", err))
 	}
 
 	tempInfo, err := os.Stat(tempPath)

@@ -3,6 +3,7 @@ package cmdexec
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,6 +62,45 @@ func TestRunCLICommandInDir_ReportsExitCode(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed with exit code 7") {
 		t.Fatalf("RunCLICommandInDir() error = %q, want exit code detail", err.Error())
+	}
+}
+
+func TestRunCLICommandInDir_CapturesStderrTailOnExit(t *testing.T) {
+	t.Setenv("GO_WANT_HELPER_PROCESS", "1")
+
+	err := RunCLICommandInDir(
+		context.Background(),
+		"",
+		helperProcessPath(t),
+		"-test.run=TestHelperProcess",
+		"--",
+		"stderr-exit-7",
+		"write /var/lib/docker: no space left on device",
+	)
+	if err == nil {
+		t.Fatal("RunCLICommandInDir() expected error, got nil")
+	}
+
+	var exitErr *ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("RunCLICommandInDir() error = %T, want *ExitError", err)
+	}
+	if exitErr.ExitCode != 7 {
+		t.Fatalf("ExitCode = %d, want 7", exitErr.ExitCode)
+	}
+	if !strings.Contains(exitErr.StderrTail, "no space left on device") {
+		t.Fatalf("StderrTail = %q, want captured stderr", exitErr.StderrTail)
+	}
+	if strings.Contains(err.Error(), "no space left on device") {
+		t.Fatalf("Error() = %q, stderr should not repeat in the message", err.Error())
+	}
+}
+
+func TestTailBuffer_KeepsOnlyLastBytes(t *testing.T) {
+	tb := &tailBuffer{limit: 8}
+	fmt.Fprint(tb, "0123456789")
+	if got, want := tb.String(), "23456789"; got != want {
+		t.Fatalf("tailBuffer = %q, want %q", got, want)
 	}
 }
 

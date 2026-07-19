@@ -59,6 +59,16 @@ func shouldWarnUnauthenticatedDockerHubPull(imageConfig config.Image, registryAu
 	return registryAuth == "" && isDockerHubImage(imageConfig)
 }
 
+func isDiskFullError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no space left on device") ||
+		strings.Contains(message, "not enough space")
+}
+
 func isRegistryAuthRejectedError(err error) bool {
 	if err == nil {
 		return false
@@ -123,6 +133,10 @@ func formatImagePullError(imageRef string, imageConfig config.Image, err error) 
 			return fmt.Errorf("failed to pull %s: %w\nHint: Docker rejected the configured Docker Hub credentials. Use your Docker Hub username, not your email, and a Docker Hub access token. Update image.registry or re-run 'haloy server registry login docker.io --username <docker-hub-username> --password-stdin'.", imageRef, err)
 		}
 		return fmt.Errorf("failed to pull %s: %w\nHint: Docker rejected the configured registry credentials for %s. Update image.registry or re-run 'haloy server registry login %s --username <username> --password-stdin'.", imageRef, err, registryServer, registryServer)
+	}
+
+	if isDiskFullError(err) {
+		return fmt.Errorf("failed to pull %s: %w\nHint: the server is out of disk space. Run 'haloy prune-images' to remove old images for this app, or lower image.history.count in your config to keep fewer rollback images.", imageRef, err)
 	}
 
 	if !strings.ContainsAny(imageRef, "/.") {

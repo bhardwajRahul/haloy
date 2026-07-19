@@ -2,12 +2,14 @@ package haloy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/haloydev/haloy/internal/apiclient"
 	"github.com/haloydev/haloy/internal/apitypes"
+	"github.com/haloydev/haloy/internal/cmdexec"
 	"github.com/haloydev/haloy/internal/config"
 	"github.com/haloydev/haloy/internal/configloader"
 	"github.com/haloydev/haloy/internal/constants"
@@ -193,7 +195,8 @@ func isDiskSpaceRelatedError(err error) bool {
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "insufficient disk space") ||
 		strings.Contains(msg, "server disk space too low") ||
-		strings.Contains(msg, "failed disk space preflight")
+		strings.Contains(msg, "failed disk space preflight") ||
+		strings.Contains(msg, "no space left on device")
 }
 
 func withImagePruneHint(err error, target config.TargetConfig) error {
@@ -202,6 +205,36 @@ func withImagePruneHint(err error, target config.TargetConfig) error {
 	}
 
 	return fmt.Errorf("%w\n%s", err, strings.Join(imagePruneErrorHint(target), "\n"))
+}
+
+func isLocalDockerDiskFullError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	msg := strings.ToLower(err.Error())
+	var exitErr *cmdexec.ExitError
+	if errors.As(err, &exitErr) {
+		msg += "\n" + strings.ToLower(exitErr.StderrTail)
+	}
+	return strings.Contains(msg, "no space left on device") ||
+		strings.Contains(msg, "not enough space")
+}
+
+// withLocalDockerDiskFullHint appends guidance when a local docker command
+// (build, save) failed because the machine running the CLI is out of disk
+// space. Haloy only informs; freeing space is left to the user because local
+// images and build caches may belong to other projects.
+func withLocalDockerDiskFullHint(err error) error {
+	if !isLocalDockerDiskFullError(err) {
+		return err
+	}
+
+	hints := []string{
+		"Hint: your local Docker disk appears to be full. Free space with 'docker system prune' or 'docker builder prune'.",
+		"Hint: on Docker Desktop you can also increase the virtual disk size under Settings > Resources.",
+	}
+	return fmt.Errorf("%w\n%s", err, strings.Join(hints, "\n"))
 }
 
 func displayImagePruneResult(target config.TargetConfig, response *apitypes.ImagePruneResponse, configPath string, includeTarget bool) {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -13,7 +14,43 @@ import (
 	"github.com/mattn/go-isatty"
 )
 
-const defaultCLICommandWaitDelay = time.Second
+const (
+	defaultCLICommandWaitDelay = time.Second
+
+	// stderrTailLimit bounds how much stderr RunCLICommandInDir retains for
+	// error classification while the full stream still goes to the terminal.
+	stderrTailLimit = 8 * 1024
+)
+
+// ExitError is returned by RunCLICommandInDir when the command ran but exited
+// non-zero. StderrTail holds the last portion of the command's stderr so
+// callers can classify failures; it is not part of the error message because
+// the stderr was already streamed to the terminal.
+type ExitError struct {
+	Name       string
+	ExitCode   int
+	StderrTail string
+}
+
+func (e *ExitError) Error() string {
+	return fmt.Sprintf("command '%s' failed with exit code %d", e.Name, e.ExitCode)
+}
+
+// tailBuffer keeps only the last limit bytes written to it.
+type tailBuffer struct {
+	limit int
+	buf   []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.limit {
+		t.buf = t.buf[len(t.buf)-t.limit:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string { return string(t.buf) }
 
 var (
 	cliWaitMessagePrint = func(message string) {
@@ -67,10 +104,12 @@ func RunCLICommandInDir(ctx context.Context, workDir, name string, args ...strin
 		return fmt.Errorf("empty command")
 	}
 
+	stderrTail := &tailBuffer{limit: stderrTailLimit}
+
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = workDir
 	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stderr = io.MultiWriter(os.Stderr, stderrTail)
 	cmd.Env = os.Environ()
 
 	if err := cmd.Run(); err != nil {
@@ -78,7 +117,7 @@ func RunCLICommandInDir(ctx context.Context, workDir, name string, args ...strin
 			return fmt.Errorf("command not found: '%s'. Is it installed and in your PATH?", name)
 		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			return fmt.Errorf("command '%s' failed with exit code %d", name, exitErr.ExitCode())
+			return &ExitError{Name: name, ExitCode: exitErr.ExitCode(), StderrTail: stderrTail.String()}
 		}
 		return fmt.Errorf("failed to execute '%s': %w", name, err)
 	}
