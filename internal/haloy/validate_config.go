@@ -45,7 +45,7 @@ func ValidateDeployConfigCmd(configPath *string) *cobra.Command {
 						continue
 					}
 
-					if err := mergedTargetConfig.Validate(rawDeployConfig.Format); err != nil {
+					if err := mergedTargetConfig.Validate(format); err != nil {
 						collectedErrors = append(collectedErrors, fmt.Errorf("target '%s' validation failed: %w", targetName, err))
 					} else if err := validateBuildPaths(*configPath, mergedTargetConfig); err != nil {
 						collectedErrors = append(collectedErrors, fmt.Errorf("target '%s': %w", targetName, err))
@@ -56,7 +56,7 @@ func ValidateDeployConfigCmd(configPath *string) *cobra.Command {
 				if err != nil {
 					collectedErrors = append(collectedErrors, fmt.Errorf("unable to extract config: %w", err))
 				} else {
-					if err := mergedSingleTargetConfig.Validate(rawDeployConfig.Format); err != nil {
+					if err := mergedSingleTargetConfig.Validate(format); err != nil {
 						collectedErrors = append(collectedErrors, err)
 					} else if err := validateBuildPaths(*configPath, mergedSingleTargetConfig); err != nil {
 						collectedErrors = append(collectedErrors, err)

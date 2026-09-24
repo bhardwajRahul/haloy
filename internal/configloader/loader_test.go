@@ -1255,3 +1255,131 @@ func TestMergeToTarget_MinReadySeconds(t *testing.T) {
 		})
 	}
 }
+
+func TestDeploymentStrategyDefaultsByDomains(t *testing.T) {
+	image := &config.Image{Repository: "nginx", Tag: "latest"}
+	domains := []config.Domain{{Canonical: "app.example.com"}}
+
+	tests := []struct {
+		name         string
+		deployConfig config.DeployConfig
+		targetConfig config.TargetConfig
+		wantStrategy config.DeploymentStrategy
+		wantNaming   config.NamingStrategy
+	}{
+		{
+			name: "no domains and no strategy resolves to replace",
+			deployConfig: config.DeployConfig{
+				TargetConfig: config.TargetConfig{Name: "worker", Server: "test.haloy.dev", Image: image},
+			},
+			wantStrategy: config.DeploymentStrategyReplace,
+		},
+		{
+			name: "domains and no strategy resolves to rolling",
+			deployConfig: config.DeployConfig{
+				TargetConfig: config.TargetConfig{Name: "web", Server: "test.haloy.dev", Image: image, Domains: domains},
+			},
+			wantStrategy: config.DeploymentStrategyRolling,
+		},
+		{
+			name: "target inheriting root domains resolves to rolling",
+			deployConfig: config.DeployConfig{
+				TargetConfig: config.TargetConfig{Name: "web", Server: "test.haloy.dev", Image: image, Domains: domains},
+			},
+			targetConfig: config.TargetConfig{Server: "prod.haloy.dev"},
+			wantStrategy: config.DeploymentStrategyRolling,
+		},
+		{
+			name: "explicit replace with domains is kept",
+			deployConfig: config.DeployConfig{
+				TargetConfig: config.TargetConfig{Name: "web", Server: "test.haloy.dev", Image: image, Domains: domains, DeploymentStrategy: config.DeploymentStrategyReplace},
+			},
+			wantStrategy: config.DeploymentStrategyReplace,
+		},
+		{
+			name: "database preset still resolves to replace and static",
+			deployConfig: config.DeployConfig{
+				TargetConfig: config.TargetConfig{Name: "postgres", Server: "test.haloy.dev", Image: image, Preset: config.PresetDatabase},
+			},
+			wantStrategy: config.DeploymentStrategyReplace,
+			wantNaming:   config.NamingStrategyStatic,
+		},
+		{
+			name: "service preset still resolves to replace and static",
+			deployConfig: config.DeployConfig{
+				TargetConfig: config.TargetConfig{Name: "redis", Server: "test.haloy.dev", Image: image, Preset: config.PresetService},
+			},
+			wantStrategy: config.DeploymentStrategyReplace,
+			wantNaming:   config.NamingStrategyStatic,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result, err := MergeToTarget(tt.deployConfig, tt.targetConfig, tt.deployConfig.Name, "yaml")
+			if err != nil {
+				t.Fatalf("MergeToTarget() unexpected error = %v", err)
+			}
+			if result.DeploymentStrategy != tt.wantStrategy {
+				t.Errorf("DeploymentStrategy = %q, want %q", result.DeploymentStrategy, tt.wantStrategy)
+			}
+			if tt.wantNaming != "" && result.NamingStrategy != tt.wantNaming {
+				t.Errorf("NamingStrategy = %q, want %q", result.NamingStrategy, tt.wantNaming)
+			}
+		})
+	}
+}
+
+func TestExtractTargetsRejectsRollingWithoutDomains(t *testing.T) {
+	image := &config.Image{Repository: "nginx", Tag: "latest"}
+
+	t.Run("target with explicit rolling and no domains is rejected", func(t *testing.T) {
+		deployConfig := config.DeployConfig{
+			TargetConfig: config.TargetConfig{Name: "worker", Server: "test.haloy.dev", Image: image, DeploymentStrategy: config.DeploymentStrategyRolling},
+		}
+		_, err := ExtractTargets(deployConfig, "yaml")
+		if err == nil {
+			t.Fatal("ExtractTargets() expected error, got none")
+		}
+		if !strings.Contains(err.Error(), "requires at least one domain") {
+			t.Fatalf("ExtractTargets() error = %v, expected it to mention domains", err)
+		}
+	})
+
+	t.Run("root rolling is rejected for a domainless target and names it", func(t *testing.T) {
+		deployConfig := config.DeployConfig{
+			TargetConfig: config.TargetConfig{Server: "test.haloy.dev", Image: image, DeploymentStrategy: config.DeploymentStrategyRolling},
+			Targets: map[string]*config.TargetConfig{
+				"web":    {Domains: []config.Domain{{Canonical: "app.example.com"}}},
+				"worker": {},
+			},
+		}
+		_, err := ExtractTargets(deployConfig, "yaml")
+		if err == nil {
+			t.Fatal("ExtractTargets() expected error, got none")
+		}
+		if !strings.Contains(err.Error(), "'worker'") || !strings.Contains(err.Error(), "requires at least one domain") {
+			t.Fatalf("ExtractTargets() error = %v, expected it to name the worker target and mention domains", err)
+		}
+	})
+
+	t.Run("root rolling with per-target replace passes", func(t *testing.T) {
+		deployConfig := config.DeployConfig{
+			TargetConfig: config.TargetConfig{Server: "test.haloy.dev", Image: image, DeploymentStrategy: config.DeploymentStrategyRolling},
+			Targets: map[string]*config.TargetConfig{
+				"web":    {Domains: []config.Domain{{Canonical: "app.example.com"}}},
+				"worker": {DeploymentStrategy: config.DeploymentStrategyReplace},
+			},
+		}
+		targets, err := ExtractTargets(deployConfig, "yaml")
+		if err != nil {
+			t.Fatalf("ExtractTargets() unexpected error = %v", err)
+		}
+		if targets["web"].DeploymentStrategy != config.DeploymentStrategyRolling {
+			t.Errorf("web DeploymentStrategy = %q, want rolling", targets["web"].DeploymentStrategy)
+		}
+		if targets["worker"].DeploymentStrategy != config.DeploymentStrategyReplace {
+			t.Errorf("worker DeploymentStrategy = %q, want replace", targets["worker"].DeploymentStrategy)
+		}
+	})
+}

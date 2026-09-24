@@ -346,6 +346,13 @@ func normalizeTargetConfig(tc *config.TargetConfig) {
 		}
 	}
 
+	// A target without domains has no route through the proxy and no stable
+	// address under dynamic container names, so a rolling cutover cannot hand
+	// traffic over. Replace is the only strategy that works for it.
+	if tc.DeploymentStrategy == "" && len(tc.Domains) == 0 {
+		tc.DeploymentStrategy = config.DeploymentStrategyReplace
+	}
+
 	if tc.DeploymentStrategy == "" {
 		tc.DeploymentStrategy = config.DeploymentStrategyRolling
 	}
@@ -434,7 +441,7 @@ func ExtractTargets(deployConfig config.DeployConfig, format string) (map[string
 				return nil, fmt.Errorf("failed to resolve target '%s': %w", targetName, err)
 			}
 
-			if err := mergedTargetConfig.Validate(deployConfig.Format); err != nil {
+			if err := mergedTargetConfig.Validate(format); err != nil {
 				return nil, fmt.Errorf("validation failed for target '%s': %w", targetName, err)
 			}
 			extractedTargetConfigs[targetName] = mergedTargetConfig
@@ -444,7 +451,7 @@ func ExtractTargets(deployConfig config.DeployConfig, format string) (map[string
 		if err != nil {
 			return nil, fmt.Errorf("failed to merge config: %w", err)
 		}
-		if err := mergedSingleTargetConfig.Validate(deployConfig.Format); err != nil {
+		if err := mergedSingleTargetConfig.Validate(format); err != nil {
 			return nil, fmt.Errorf("config invalid: %w", err)
 		}
 		extractedTargetConfigs[deployConfig.Name] = mergedSingleTargetConfig

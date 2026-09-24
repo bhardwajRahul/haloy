@@ -71,7 +71,7 @@ func (tc *TargetConfig) Validate(format string) error {
 
 	// We can't use default deployment strategy if we want to use static naming because we can't have two container running with the same name.
 	if tc.NamingStrategy == NamingStrategyStatic && tc.DeploymentStrategy != DeploymentStrategyReplace {
-		return fmt.Errorf("%s 'static' requires %s 'replace' (you cannot use rolling updates with fixed container names)i", GetFieldNameForFormat(TargetConfig{}, "NamingStrategy", format), GetFieldNameForFormat(TargetConfig{}, "DeploymentStrategy", format))
+		return fmt.Errorf("%s 'static' requires %s 'replace' (you cannot use rolling updates with fixed container names)", GetFieldNameForFormat(TargetConfig{}, "NamingStrategy", format), GetFieldNameForFormat(TargetConfig{}, "DeploymentStrategy", format))
 	}
 
 	if tc.NamingStrategy == NamingStrategyStatic && tc.Replicas != nil && *tc.Replicas > 1 {
@@ -83,6 +83,14 @@ func (tc *TargetConfig) Validate(format string) error {
 		if !slices.Contains(validDeploymentStrategies, tc.DeploymentStrategy) {
 			return fmt.Errorf("%s must be 'rolling' or 'replace', got '%s'", GetFieldNameForFormat(TargetConfig{}, "DeploymentStrategy", format), tc.DeploymentStrategy)
 		}
+	}
+
+	// Rolling hands traffic over through the proxy, which only routes by domain.
+	// A target without domains has nothing to hand over and no stable address
+	// under dynamic container names, so only replace can retire its old containers.
+	if len(tc.Domains) == 0 && tc.DeploymentStrategy == DeploymentStrategyRolling {
+		field := GetFieldNameForFormat(TargetConfig{}, "DeploymentStrategy", format)
+		return fmt.Errorf("%s 'rolling' requires at least one domain: a target without domains has no stable address for a zero-downtime cutover. Set %s 'replace' on this target, or remove the global 'rolling' setting", field, field)
 	}
 
 	if len(tc.Domains) > 0 {

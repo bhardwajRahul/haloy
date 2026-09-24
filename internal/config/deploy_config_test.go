@@ -307,6 +307,55 @@ func TestTargetConfig_Validate_Comprehensive(t *testing.T) {
 			expectError: false,
 		},
 		{
+			name: "rolling without domains is rejected",
+			target: TargetConfig{
+				Name:               "haloy-test-app",
+				Server:             "haloy.dev",
+				Image:              &Image{Repository: "nginx", Tag: "latest"},
+				DeploymentStrategy: DeploymentStrategyRolling,
+			},
+			format:      "yaml",
+			expectError: true,
+			errMsg:      "requires at least one domain",
+		},
+		{
+			name: "replace without domains is allowed",
+			target: TargetConfig{
+				Name:               "haloy-test-app",
+				Server:             "haloy.dev",
+				Image:              &Image{Repository: "nginx", Tag: "latest"},
+				DeploymentStrategy: DeploymentStrategyReplace,
+			},
+			format:      "yaml",
+			expectError: false,
+		},
+		{
+			name: "rolling with domains is allowed",
+			target: TargetConfig{
+				Name:               "haloy-test-app",
+				Server:             "haloy.dev",
+				Image:              &Image{Repository: "nginx", Tag: "latest"},
+				DeploymentStrategy: DeploymentStrategyRolling,
+				Domains:            []Domain{{Canonical: "example.com"}},
+			},
+			format:      "yaml",
+			expectError: false,
+		},
+		{
+			name: "static naming requires replace",
+			target: TargetConfig{
+				Name:               "haloy-test-app",
+				Server:             "haloy.dev",
+				Image:              &Image{Repository: "nginx", Tag: "latest"},
+				NamingStrategy:     NamingStrategyStatic,
+				DeploymentStrategy: DeploymentStrategyRolling,
+				Domains:            []Domain{{Canonical: "example.com"}},
+			},
+			format:      "yaml",
+			expectError: true,
+			errMsg:      "fixed container names)",
+		},
+		{
 			name: "valid min_ready_seconds 600",
 			target: TargetConfig{
 				Name:   "haloy-test-app",
