@@ -27,6 +27,11 @@ func TestIsDockerHubPullRateLimitError(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "pull rate limit message without docs link",
+			err:  errors.New("toomanyrequests: You have reached your pull rate limit."),
+			want: true,
+		},
+		{
 			name: "ordinary pull error",
 			err:  errors.New("pull access denied, repository does not exist or may require authorization"),
 			want: false,

@@ -27,12 +27,12 @@ func TestGetTimestampFromDeploymentID(t *testing.T) {
 		},
 		{
 			name:         "contains_invalid_char_exclamation",
-			deploymentID: "01H7VXPQZK9XYZ123456!@#",
+			deploymentID: "01ARZ3NDEKTSV4RRFFQ69G5FA!",
 			wantErr:      true,
 		},
 		{
-			name:         "contains_invalid_char_lowercase_o",
-			deploymentID: "01H7VXPQZKoXYZ12340AB",
+			name:         "contains_invalid_char_letter_o",
+			deploymentID: "01ARZ3NDEKTSV4RRFFQ69G5FAO",
 			wantErr:      true,
 		},
 	}

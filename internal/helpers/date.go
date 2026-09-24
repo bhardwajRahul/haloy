@@ -9,7 +9,7 @@ import (
 
 // GetTimestampFromDeploymentID extracts time.Time from an ULID
 func GetTimestampFromDeploymentID(deploymentID string) (time.Time, error) {
-	parsedULID, err := ulid.Parse(deploymentID)
+	parsedULID, err := ulid.ParseStrict(deploymentID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("invalid deployment ID: %v", err)
 	}

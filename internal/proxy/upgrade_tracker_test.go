@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
@@ -100,8 +101,16 @@ func TestShutdownForceClosesAPIUpgradeTunnel(t *testing.T) {
 		t.Fatal("backend API upgrade connection remained open")
 	}
 
+	// The tunnel must be closed now: reading should end in EOF or a reset,
+	// not a read timeout.
 	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
-	if _, err := reader.ReadByte(); err == nil {
-		t.Fatal("client tunnel remained readable after proxy shutdown")
+	for {
+		if _, err := reader.ReadByte(); err != nil {
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
+				t.Fatal("client tunnel remained open after proxy shutdown")
+			}
+			break
+		}
 	}
 }

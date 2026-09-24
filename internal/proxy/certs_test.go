@@ -27,8 +27,12 @@ func TestCertManagerExactMatch(t *testing.T) {
 		t.Fatalf("NewCertManager() error = %v", err)
 	}
 
-	if _, err := cm.GetCertificate(&tls.ClientHelloInfo{ServerName: "example.com"}); err != nil {
+	cert, err := cm.GetCertificate(&tls.ClientHelloInfo{ServerName: "example.com"})
+	if err != nil {
 		t.Fatalf("GetCertificate() error = %v", err)
+	}
+	if cert == nil || cert == cm.defaultCert {
+		t.Fatal("GetCertificate() returned the default certificate, want the certificate for example.com")
 	}
 }
 

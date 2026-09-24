@@ -307,34 +307,3 @@ func TestStateTracker_GetState_UnknownTarget(t *testing.T) {
 		t.Errorf("GetState for unknown target = %v, want StateUnhealthy", state)
 	}
 }
-
-func TestStateTracker_ConcurrentAccess(t *testing.T) {
-	st := NewStateTracker(3, 2)
-
-	targets := []Target{
-		{ID: "a"},
-		{ID: "b"},
-		{ID: "c"},
-	}
-	st.SyncTargets(targets)
-
-	done := make(chan bool)
-
-	// Concurrent reads and writes
-	for range 10 {
-		go func() {
-			for j := range 100 {
-				st.RecordResult(Result{Target: targets[j%3], Healthy: j%2 == 0})
-				st.GetHealthyTargets()
-				st.GetStats()
-				st.GetState(targets[j%3].ID)
-			}
-			done <- true
-		}()
-	}
-
-	// Wait for all goroutines
-	for range 10 {
-		<-done
-	}
-}

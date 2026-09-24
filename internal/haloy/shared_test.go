@@ -59,8 +59,8 @@ func TestCheckServerAuth_InvalidAuth(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unauthorized, got nil")
 	}
-	if !strings.Contains(err.Error(), "authentication") {
-		t.Fatalf("expected authentication error, got: %v", err)
+	if !strings.Contains(err.Error(), "authentication failed - check your "+constants.EnvVarAPIToken) {
+		t.Fatalf("expected unauthorized error, got: %v", err)
 	}
 }
 
@@ -74,7 +74,7 @@ func TestCheckServerAuth_ServerUnreachable(t *testing.T) {
 
 func TestCheckServerAuth_MissingToken(t *testing.T) {
 	t.Setenv(constants.EnvVarConfigDir, t.TempDir())
-	os.Unsetenv(constants.EnvVarAPIToken)
+	t.Setenv(constants.EnvVarAPIToken, "")
 
 	srv := newVersionServer(http.StatusOK)
 	defer srv.Close()
@@ -167,7 +167,7 @@ func TestGetToken_HALOYAPITOKENFallback(t *testing.T) {
 
 func TestGetToken_ErrorWhenNoTokenAvailable(t *testing.T) {
 	t.Setenv(constants.EnvVarConfigDir, t.TempDir())
-	os.Unsetenv(constants.EnvVarAPIToken)
+	t.Setenv(constants.EnvVarAPIToken, "")
 
 	_, err := getToken(nil, "https://example.com")
 	if err == nil {

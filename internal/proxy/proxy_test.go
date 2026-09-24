@@ -471,12 +471,16 @@ func TestProxyToBackend_DialFailover(t *testing.T) {
 		},
 	}
 
-	r := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
-	w := httptest.NewRecorder()
-	p.proxyToBackend(w, r, route, time.Now())
+	// Round-robin starts each request at a different backend, so across two
+	// requests one of them is guaranteed to pick the dead backend first.
+	for i := range len(route.Backends) {
+		r := httptest.NewRequest(http.MethodGet, "https://example.com/", nil)
+		w := httptest.NewRecorder()
+		p.proxyToBackend(w, r, route, time.Now())
 
-	if w.Code != http.StatusOK || w.Body.String() != "ok" {
-		t.Errorf("status = %d body = %q, want request to fail over to the live backend", w.Code, w.Body.String())
+		if w.Code != http.StatusOK || w.Body.String() != "ok" {
+			t.Errorf("request %d: status = %d body = %q, want request to fail over to the live backend", i, w.Code, w.Body.String())
+		}
 	}
 }
 

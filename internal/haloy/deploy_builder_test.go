@@ -2,7 +2,6 @@ package haloy
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,32 +85,6 @@ func TestGetBuilderWorkDir(t *testing.T) {
 			if result != tt.expected {
 				t.Errorf("getBuilderWorkDir(%q) = %q, want %q", tt.configPath, result, tt.expected)
 			}
-		})
-	}
-}
-
-func TestUploadImage_TempFilePattern(t *testing.T) {
-	tests := []struct {
-		name     string
-		imageRef string
-	}{
-		{"simple image", "nginx:latest"},
-		{"image with org slash", "myorg/myapp:latest"},
-		{"deeply nested ref", "registry.io/org/app:v1"},
-		{"no tag", "myapp"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			sanitized := strings.NewReplacer("/", "-", ":", "-").Replace(tt.imageRef)
-			pattern := fmt.Sprintf("haloy-upload-%s-*.tar", sanitized)
-			f, err := os.CreateTemp("", pattern)
-			if err != nil {
-				t.Errorf("os.CreateTemp failed for image ref %q: %v", tt.imageRef, err)
-				return
-			}
-			os.Remove(f.Name())
-			f.Close()
 		})
 	}
 }

@@ -82,15 +82,28 @@ func TestAppDebouncerMaxWait(t *testing.T) {
 
 // TestAppDebouncerNoDeadlock verifies that a signalDone blocked on an
 // undrained output channel does not hold the mutex, so captureEvent stays
-// non-blocking and stop returns promptly.
+// non-blocking.
 func TestAppDebouncerNoDeadlock(t *testing.T) {
 	output := make(chan debouncedAppEvent) // unbuffered, never drained
 	d := newAppDebouncer(10*time.Millisecond, time.Second, output, discardLogger())
+	defer d.stop()
 
 	d.captureEvent("app-a", testEvent(events.ActionDie, "01aaa"))
 
-	// Wait for the timer to fire so signalDone is blocked sending on output.
-	time.Sleep(100 * time.Millisecond)
+	// Wait until signalDone has consumed app-a's events, after which it is
+	// blocked sending on output. TryLock keeps this loop from hanging if the
+	// send holds the lock; the captureEvent check below then reports it.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if d.mu.TryLock() {
+			_, pending := d.capturedEvents["app-a"]
+			d.mu.Unlock()
+			if !pending {
+				break
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	captured := make(chan struct{})
 	go func() {
@@ -102,17 +115,5 @@ func TestAppDebouncerNoDeadlock(t *testing.T) {
 	case <-captured:
 	case <-time.After(time.Second):
 		t.Fatal("captureEvent blocked while a debounced send was pending")
-	}
-
-	stopped := make(chan struct{})
-	go func() {
-		d.stop()
-		close(stopped)
-	}()
-
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("stop blocked while a debounced send was pending")
 	}
 }

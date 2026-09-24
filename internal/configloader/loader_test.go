@@ -642,7 +642,7 @@ func TestMergeImage(t *testing.T) {
 		errMsg       string
 	}{
 		{
-			name: "target image overrides base completely",
+			name: "target image fields override base, unset fields kept",
 			targetConfig: config.TargetConfig{
 				Image: &config.Image{
 					Repository: "custom",
@@ -654,6 +654,10 @@ func TestMergeImage(t *testing.T) {
 			expected: &config.Image{
 				Repository: "custom",
 				Tag:        "latest",
+				History: &config.ImageHistory{
+					Strategy: config.HistoryStrategyLocal,
+					Count:    new(5),
+				},
 			},
 		},
 		{
@@ -716,12 +720,11 @@ func TestMergeImage(t *testing.T) {
 			expected:     baseImage,
 		},
 		{
-			name:         "no image specified",
+			name:         "no image specified returns nil",
 			targetConfig: config.TargetConfig{},
 			images:       images,
 			baseImage:    nil,
-			expectError:  false,
-			errMsg:       "no image specified for target",
+			expected:     nil,
 		},
 	}
 
@@ -737,21 +740,30 @@ func TestMergeImage(t *testing.T) {
 				}
 			} else {
 				if err != nil {
-					t.Errorf("mergeImage() unexpected error = %v", err)
+					t.Fatalf("mergeImage() unexpected error = %v", err)
 				}
-				if result != nil && result.Repository != tt.expected.Repository {
+				if tt.expected == nil {
+					if result != nil {
+						t.Fatalf("mergeImage() = %+v, want nil", result)
+					}
+					return
+				}
+				if result == nil {
+					t.Fatal("mergeImage() = nil, want image")
+				}
+				if result.Repository != tt.expected.Repository {
 					t.Errorf("mergeImage() Repository = %s, expected %s",
 						result.Repository, tt.expected.Repository)
 				}
-				if result != nil && result.Tag != tt.expected.Tag {
+				if result.Tag != tt.expected.Tag {
 					t.Errorf("mergeImage() Tag = %s, expected %s",
 						result.Tag, tt.expected.Tag)
 				}
-				if result != nil && result.PullPolicy != tt.expected.PullPolicy {
+				if result.PullPolicy != tt.expected.PullPolicy {
 					t.Errorf("mergeImage() PullPolicy = %s, expected %s",
 						result.PullPolicy, tt.expected.PullPolicy)
 				}
-				if result != nil && tt.expected.History != nil {
+				if tt.expected.History != nil {
 					if result.History == nil {
 						t.Errorf("mergeImage() History should not be nil")
 					} else if result.History.Strategy != tt.expected.History.Strategy {
@@ -1078,22 +1090,26 @@ func TestOmittedImageFieldShouldBuild(t *testing.T) {
 	}
 }
 
-func TestPresetServiceImagesDefaultToPullIfMissing(t *testing.T) {
-	deployConfig := config.DeployConfig{
-		TargetConfig: config.TargetConfig{
-			Name:   "postgres",
-			Server: "test.haloy.dev",
-			Preset: config.PresetDatabase,
-			Image:  &config.Image{Repository: "postgres", Tag: "18"},
-		},
-	}
+func TestPresetImagesDefaultToPullIfMissing(t *testing.T) {
+	for _, preset := range []config.Preset{config.PresetDatabase, config.PresetService} {
+		t.Run(string(preset), func(t *testing.T) {
+			deployConfig := config.DeployConfig{
+				TargetConfig: config.TargetConfig{
+					Name:   "postgres",
+					Server: "test.haloy.dev",
+					Preset: preset,
+					Image:  &config.Image{Repository: "postgres", Tag: "18"},
+				},
+			}
 
-	result, err := MergeToTarget(deployConfig, config.TargetConfig{}, "postgres", "yaml")
-	if err != nil {
-		t.Fatalf("MergeToTarget() unexpected error = %v", err)
-	}
-	if result.Image.PullPolicy != config.PullPolicyIfMissing {
-		t.Fatalf("Image.PullPolicy = %q, want %q", result.Image.PullPolicy, config.PullPolicyIfMissing)
+			result, err := MergeToTarget(deployConfig, config.TargetConfig{}, "postgres", "yaml")
+			if err != nil {
+				t.Fatalf("MergeToTarget() unexpected error = %v", err)
+			}
+			if result.Image.PullPolicy != config.PullPolicyIfMissing {
+				t.Fatalf("Image.PullPolicy = %q, want %q", result.Image.PullPolicy, config.PullPolicyIfMissing)
+			}
+		})
 	}
 }
 
