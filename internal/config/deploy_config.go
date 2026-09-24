@@ -63,7 +63,7 @@ const (
 type DeploymentStrategy string
 
 const (
-	DeploymentStrategyRolling DeploymentStrategy = "rolling" // Default: blue-green deployments
+	DeploymentStrategyRolling DeploymentStrategy = "rolling" // Default when the target has domains: blue-green deployments
 	DeploymentStrategyReplace DeploymentStrategy = "replace" // Stop old, start new
 )
 
